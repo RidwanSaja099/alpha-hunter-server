@@ -3,3 +3,4 @@ yfinance
 google-genai
 python-dotenv
 pandas
+gunicorn

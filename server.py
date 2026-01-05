@@ -14,7 +14,7 @@ app = Flask(__name__)
 # ==========================================
 
 # API Key yang tadi berhasil
-GEMINI_API_KEY = "AIzaSyAOcwQyQOkVnM0DyFPsBvS0PaQpoUvLGRo" 
+GEMINI_API_KEY = "" 
 
 # Inisialisasi Client (Syntax Baru)
 client = None
@@ -313,3 +313,4 @@ def remove_watchlist():
 if __name__ == '__main__':
     print("🚀 Alpha Hunter V3 (Gemini Flash Latest): READY")
     app.run(host='0.0.0.0', port=5000, debug=True)
+

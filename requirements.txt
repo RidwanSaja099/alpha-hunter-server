@@ -1,7 +1,9 @@
 Flask==3.0.0
 gunicorn==21.2.0
-yfinance==0.2.36
-pandas==2.2.0
+# Gunakan yfinance terbaru tapi stabil
+yfinance>=0.2.36
+# Turunkan pandas ke versi yang sangat stabil di Linux
+pandas==2.1.4
 numpy==1.26.3
 python-dotenv==1.0.1
 requests==2.31.0
@@ -9,10 +11,12 @@ lxml>=5.0.0
 
 # --- LIBRARY AI & SEARCH ---
 duckduckgo-search>=6.1.0
+# Google GenAI versi yang tidak rewel
 google-genai>=0.4.0
 
 # --- UPDATE PENTING UNTUK MENGATASI ERROR ---
 groq>=0.9.0
 openai>=1.35.0
+# Kunci httpx agar tidak bentrok dengan Groq
 httpx==0.27.0
 httpcore==1.0.5

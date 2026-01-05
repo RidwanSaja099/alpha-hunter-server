@@ -4,3 +4,6 @@ google-genai
 python-dotenv
 pandas
 gunicorn
+groq
+openai
+jiter

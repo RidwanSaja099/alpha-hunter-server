@@ -6,16 +6,19 @@ import math
 from flask import Flask, jsonify, request
 from dotenv import load_dotenv
 
-# --- IMPORT LIBRARY AI ---
-from google import genai
-from google.genai import types # [PENTING] Untuk Google Search Tool
+# --- IMPORT LIBRARY AI & SEARCH ---
+from duckduckgo_search import DDGS # [BARU] Search Engine Gratis Tanpa API Key
 from groq import Groq 
 from openai import OpenAI 
+# Kita simpan Gemini sebagai cadangan saja
+try:
+    from google import genai
+except:
+    genai = None
 
-# Load environment variables
 load_dotenv()
 
-# Pastikan file rumus_saham.py ada di folder yang sama (V5 Sniper)
+# Pastikan file rumus_saham.py (V5 Sniper) ada di folder yang sama
 from rumus_saham import analisa_multistrategy, ambil_berita_saham 
 
 app = Flask(__name__)
@@ -27,107 +30,125 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
+client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY and genai else None
 
 # ==========================================
-# 1. AGEN 1: GEMINI SEBAGAI "WARTAWAN" (PENCARI FAKTA)
+# 1. AGEN 1: DUCKDUCKGO + GROQ (WARTAWAN GRATIS)
 # ==========================================
-def agen_pencari_berita_gemini(ticker):
+def agen_pencari_berita_internet(ticker):
     """
-    Tugas: Browsing internet cari Corporate Action & Isu Terkini.
-    Output: Ringkasan Fakta (Bukan Analisa).
+    Menggunakan DuckDuckGo untuk browsing internet secara GRATIS (Tanpa Limit API).
+    Lalu hasil search dirangkum oleh Groq.
     """
-    if not client_gemini:
-        return "Gemini tidak aktif. Mengandalkan berita Yahoo."
-
+    print(f"🌍 Sedang browsing internet cari info: {ticker}...")
+    
+    # 1. CARI DATA MENTAH DARI INTERNET
+    search_results = []
     try:
-        print(f"🌍 Gemini sedang browsing info tentang {ticker}...")
-        prompt_news = f"""
-        TUGAS KHUSUS: Cari berita TERBARU dan VALID mengenai saham {ticker} (Indonesia) hari ini atau minggu ini.
-        Gunakan Google Search.
+        # Cari berita spesifik saham Indonesia terbaru
+        query = f"berita saham {ticker} indonesia terbaru hari ini corporate action kasus"
+        results = DDGS().text(query, max_results=5) # Ambil 5 berita teratas
         
-        FOKUS PADA:
-        1. Corporate Action Terbaru/Akan Datang (Dividen, RUPS, Right Issue, Merger, Akuisisi, Buyback).
-        2. Isu Vital (Kasus Hukum, PKPU, Laporan Keuangan Rilis, Proyek Besar).
-        
-        OUTPUT:
-        Buatlah RINGKASAN PADAT (maksimal 3 poin penting). 
-        Jika tidak ada berita penting dalam 1 minggu terakhir, katakan "TIDAK ADA BERITA SIGNIFIKAN".
-        JANGAN BERIKAN ANALISA/REKOMENDASI. HANYA FAKTA.
-        """
-        
-        response = client_gemini.models.generate_content(
-            model='gemini-1.5-flash',
-            contents=prompt_news,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(
-                    google_search_retrieval=types.GoogleSearchRetrieval
-                )]
-            )
-        )
-        return response.text.strip()
+        if results:
+            for r in results:
+                search_results.append(f"- {r['title']}: {r['body']} (Sumber: {r['href']})")
+        else:
+            return "Tidak ditemukan berita spesifik di internet."
+            
     except Exception as e:
-        print(f"⚠️ Gemini Error: {e}")
-        # Fallback jika Search Gagal
-        return "Gagal mengambil berita live (Limit/Error). Gunakan data Yahoo."
+        print(f"⚠️ DuckDuckGo Error: {e}")
+        return "Gagal browsing internet (Koneksi/Search Error)."
+
+    # Gabungkan hasil pencarian jadi satu teks
+    raw_data = "\n".join(search_results)
+
+    # 2. SURUH GROQ MERANGKUM HASIL PENCARIAN
+    if not client_groq:
+        return f"Hasil Browsing Mentah:\n{raw_data}"
+
+    prompt_wartawan = f"""
+    Kamu adalah Wartawan Pasar Modal.
+    Berikut adalah hasil pencarian internet mentah tentang saham {ticker}:
+    
+    {raw_data}
+    
+    TUGAS:
+    Buat ringkasan SINGKAT (maksimal 3 poin).
+    Fokus hanya pada: Sentimen Positif/Negatif, Corporate Action (Dividen/Merger), atau Masalah Hukum.
+    Jika beritanya tidak relevan atau basi, katakan "NIL".
+    """
+    
+    try:
+        chat = client_groq.chat.completions.create(
+            messages=[{"role": "user", "content": prompt_wartawan}],
+            model="llama-3.3-70b-versatile",
+        )
+        return chat.choices[0].message.content.strip()
+    except:
+        return f"Groq Error. Data Mentah:\n{raw_data}"
 
 # ==========================================
-# 2. AGEN 2: GROQ/DEEPSEEK SEBAGAI "KEPALA ANALIS"
+# 2. AGEN 2: DEEPSEEK/GROQ (KEPALA ANALIS)
 # ==========================================
 def agen_analis_utama(data_context):
     """
-    Tugas: Menerima data teknikal + Laporan Gemini, lalu memutuskan strategi.
+    Otak utama yang mengambil keputusan Buy/Sell dengan 6 POIN ANALISIS LENGKAP.
     """
     prompt_analis = f"""
-    Kamu adalah Fund Manager Senior / Kepala Analis Saham.
+    Kamu adalah Fund Manager Senior & Veteran Pasar Modal Indonesia.
     
-    BERIKUT ADALAH LAPORAN LENGKAP:
+    LAPORAN LENGKAP SAHAM:
     {data_context}
     
-    TUGASMU ADALAH MENGAMBIL KEPUTUSAN FINAL (DECISION MAKER):
+    TUGAS ANALISIS MENDALAM (WAJIB JAWAB 6 POIN INI):
     
-    1. 🧠 **Sintesa Data**: Hubungkan Fakta Berita (dari Laporan Lapangan) dengan Data Teknikal & Bandar (Volume/Flow). Apakah beritanya mendukung kenaikan harga?
-    2. 🛡️ **Cek Validitas**: Apakah kenaikan harga ini didukung Fundamental (Valuasi) atau cuma gorengan semata?
-    3. 🎯 **Penentuan Strategi**: Tentukan gaya trading (BPJS/BSJP/SWING/INVEST/HINDARI).
-    4. 🔢 **PLAN EKSEKUSI**: Tentukan Entry Price & Target Price yang realistis sesuai volatilitas hari ini.
-    5. ⚖️ **VERDICT**: (STRONG BUY / BUY / WAIT / SELL).
+    1. 🌍 **Sintesa Berita & Sentimen (CRUCIAL)**
+       (Gabungkan laporan berita internet di atas dengan pergerakan harga. Apakah beritanya mendukung kenaikan, atau justru 'Jebakan Bandar'? Adakah Corporate Action?)
+       
+    2. 🕵️‍♂️ **Analisa Dibalik Layar (Bandarmologi)**
+       (Lihat Volume & Smart Money Flow. Apakah sedang Akumulasi diam-diam atau Distribusi? Siapa yang menang hari ini, Buyer atau Seller?)
+       
+    3. 📊 **Cek Valuasi & Fundamental**
+       (Berdasarkan PER/PBV, apakah harga sekarang Masuk Akal? Apakah perusahaan sehat?)
+       
+    4. ⏱️ **Timing & Market Structure**
+       (Lihat posisi Candle & Trend 1 Tahun. Apakah ini 'Pisau Jatuh' atau 'Awal Uptrend'? Waktunya HAKA atau Antri Bawah?)
+
+    5. 🎯 **Rekomendasi Gaya Trading & Plan Angka**
+       - Pilih SATU: (SCALPING / SWING / INVEST / BPJS / HINDARI).
+       - Tentukan Entry Price & Target Price versimu sendiri (Second Opinion).
+       
+    6. ⚖️ **VERDICT FINAL**
+       (Kesimpulan Tegas: STRONG BUY / BUY / WAIT / SELL).
     
-    Jawab dengan gaya bahasa profesional tapi tajam.
+    Jawab dengan bahasa trader yang tajam, logis, dan tidak bertele-tele.
     """
 
-    # Prioritas 1: Groq (Llama 3 - Cepat & Logis)
-    if client_groq:
-        try:
-            print("⚡ Groq sedang menganalisa data gabungan...")
-            chat = client_groq.chat.completions.create(
-                messages=[{"role": "user", "content": prompt_analis}],
-                model="llama-3.3-70b-versatile",
-            )
-            return chat.choices[0].message.content.strip()
-        except Exception as e: print(f"⚠️ Groq Error: {e}")
-
-    # Prioritas 2: DeepSeek (Reasoning Kuat)
+    # Opsi 1: Gunakan DeepSeek (Paling Pinter Mikir)
     if client_deepseek:
         try:
-            print("🧠 DeepSeek sedang berpikir dalam...")
+            print("🧠 DeepSeek sedang menganalisa keputusan final...")
             res = client_deepseek.chat.completions.create(
                 model="deepseek-chat", 
                 messages=[{"role": "user", "content": prompt_analis}]
             )
             return res.choices[0].message.content.strip()
         except: pass
-    
-    # Emergency Backup: Balik ke Gemini (Mode Standar) kalau 2 AI diatas mati
-    if client_gemini:
-        try:
-            return client_gemini.models.generate_content(
-                model='gemini-1.5-flash', contents=prompt_analis
-            ).text.strip()
-        except: pass
 
-    return "Maaf, semua Analis AI sedang sibuk."
+    # Opsi 2: Gunakan Groq (Backup Cepat)
+    if client_groq:
+        try:
+            print("⚡ Groq sedang menganalisa keputusan final...")
+            chat = client_groq.chat.completions.create(
+                messages=[{"role": "user", "content": prompt_analis}],
+                model="llama-3.3-70b-versatile",
+            )
+            return chat.choices[0].message.content.strip()
+        except: pass
+        
+    return "Maaf, AI Analis sedang gangguan."
 
 # ==========================================
 # 3. DATABASE & CACHE
@@ -155,7 +176,7 @@ DATABASE_SYARIAH = [
 MARKET_UNIVERSE = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "UNTR", "ICBP", "INDF", "GOTO", "MDKA", "ANTM", "INCO", "PGAS", "ADRO", "PTBA", "BRPT", "BREN", "AMMN"]
 WATCHLIST = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "GOTO", "ANTM", "ADRO", "UNTR"]
 
-# FUNGSI VALIDASI HISTORI (V5 SNIPER - ANTI AMPAS)
+# FUNGSI VALIDASI HISTORI (V5 SNIPER)
 def validasi_histori_panjang(ticker_lengkap, data_short):
     try:
         hist = yf.Ticker(ticker_lengkap).history(period="1y")
@@ -246,7 +267,7 @@ def cek_kondisi_market():
     return MARKET_STATUS['condition']
 
 # ==========================================
-# 4. LOGIKA PLAN SAKTI (FRAKSI, FIBO, PSIKOLOGI)
+# 4. LOGIKA PLAN SAKTI (V5)
 # ==========================================
 def get_tick_size(harga):
     if harga < 200: return 1
@@ -278,7 +299,6 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
 
     if harga_sekarang <= 0: return "-", 0, "-"
     
-    # Entry Strategy: Front Running Support
     base_support = support_short
     tick_size = get_tick_size(base_support)
     buy_low = bulatkan_ke_tick(base_support + (2 * tick_size))
@@ -290,7 +310,6 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
 
     entry_str = f"{format_angka(buy_low)} - {format_angka(buy_high)}{status_entry}"
 
-    # Stop Loss Strategy: Under Support
     sl_raw = base_support - (6 * get_tick_size(base_support))
     sl = bulatkan_ke_tick(sl_raw)
 
@@ -301,10 +320,7 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
         tp_str = "HOLD JANGKA PANJANG"
         sl = bulatkan_ke_tick(harga_sekarang * 0.85)
     else:
-        # TP1: Aman
         tp1 = bulatkan_ke_tick(buy_low * 1.04)
-        
-        # TP2: Historis / Fibo
         max_1y = hist_data.get('max_1y', 0)
         if max_1y > buy_low and max_1y < (buy_low * 1.5): tp2_raw = max_1y
         else: tp2_raw = buy_low * 1.08
@@ -321,8 +337,6 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
             except: pass
         
         tp2 = bulatkan_ke_tick(tp2_raw)
-        
-        # TP3: Psikologis
         step = get_psychological_step(tp2)
         tp3_raw = (int(tp2 / step) + 1) * step
         if tp3_raw <= tp2: tp3_raw += step
@@ -335,7 +349,7 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
     return entry_str, sl, tp_str
 
 # ==========================================
-# 5. ENDPOINT DETAIL (CORE SYSTEM: AI ESTAFET)
+# 5. ENDPOINT DETAIL (ESTAFET AI)
 # ==========================================
 @app.route('/api/stock-detail', methods=['GET'])
 def get_stock_detail():
@@ -348,7 +362,7 @@ def get_stock_detail():
     if data['last_price'] == 0:
         return jsonify({"error": "Not Found", "analysis": {"score":0, "verdict":"ERR", "reason":"-", "type":"-"}})
     
-    # 1. Ambil Data Teknikal & Live
+    # 1. Ambil Data Teknikal
     info_live = ambil_data_live_lengkap(ticker_lengkap)
     hist_data = data.get('hist_data', {})
     entry, sl, tp = hitung_plan_sakti(data, ticker_fibo=ticker_lengkap)
@@ -358,17 +372,10 @@ def get_stock_detail():
     catatan_histori = hist_data.get('note', 'Valid')
     trend_1y = hist_data.get('trend_1y', 'N/A')
     
-    # 2. Ambil Berita Yahoo (Backup)
-    list_berita = ambil_berita_saham(ticker_lengkap)
-    headlines_yahoo = [b['title'] for b in list_berita[:3]] 
-    teks_yahoo = "\n- ".join(headlines_yahoo) if headlines_yahoo else "-"
+    # 2. [LANGKAH 1] DUCKDUCKGO MENCARI BERITA DI INTERNET (GRATIS)
+    laporan_fakta_internet = agen_pencari_berita_internet(ticker_polos)
 
-    # 3. [LANGKAH 1] SURUH GEMINI CARI FAKTA BARU
-    # Ini fitur utama update kali ini: Gemini mencari fakta di luar data Yahoo
-    laporan_fakta_gemini = agen_pencari_berita_gemini(ticker_polos)
-
-    # 4. [LANGKAH 2] KIRIM SEMUA DATA KE GROQ/DEEPSEEK
-    # Data dikemas jadi satu konteks
+    # 3. [LANGKAH 2] ANALISA OLEH DEEPSEEK/GROQ (6 POIN WAJIB)
     data_context = f"""
     SAHAM: {ticker_polos}
     
@@ -377,20 +384,16 @@ def get_stock_detail():
     - Warning: {catatan_histori}
     {info_live}
     
-    [DATA BERITA]
-    - Dari Yahoo: {teks_yahoo}
-    - LAPORAN WARTAWAN LAPANGAN (GEMINI - GOOGLE SEARCH):
-      "{laporan_fakta_gemini}"
+    [LAPORAN BERITA DARI INTERNET (DUCKDUCKGO)]
+    {laporan_fakta_internet}
     """
     
-    # Analis (Groq/DeepSeek) membuat keputusan
     analisa_final = agen_analis_utama(data_context)
     
     rincian_teknikal = f"🔍 **SKOR {score} ({verdict})**\n"
     if catatan_histori != "Valid": rincian_teknikal += f"⚠️ {catatan_histori}\n"
 
-    # Gabungkan Laporan Fakta + Analisa Final untuk ditampilkan ke User
-    reason_final = f"{rincian_teknikal}\n\n🌍 **LAPORAN FAKTA (GEMINI):**\n{laporan_fakta_gemini}\n\n====================\n🧠 **ANALISA FINAL:**\n{analisa_final}"
+    reason_final = f"{rincian_teknikal}\n\n🌍 **BERITA INTERNET (DUCKDUCKGO):**\n{laporan_fakta_internet}\n\n====================\n🧠 **ANALISA FINAL:**\n{analisa_final}"
     
     pct = data.get('change_pct', 0)
     tanda = "+" if pct >= 0 else ""
@@ -406,13 +409,13 @@ def get_stock_detail():
             "type": data['type']
         },
         "plan": { "entry": entry, "stop_loss": sl, "take_profit": tp },
-        "news": list_berita,
+        "news": [], # Kosongkan saja karena sudah ada di analisis
         "is_watchlist": ticker_polos in WATCHLIST
     }
     return jsonify(stock_detail)
 
 # ==========================================
-# 6. SCANNER & WATCHLIST (TETAP SAMA)
+# 6. SCANNER & WATCHLIST
 # ==========================================
 def process_single_stock(kode, target_strategy, min_score_needed):
     try:

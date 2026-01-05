@@ -4,7 +4,7 @@ import numpy as np
 from datetime import datetime
 
 # ==========================================
-# 1. ALAT BANTU HITUNG (ULTIMATE EDITION)
+# 1. ALAT BANTU HITUNG (ULTIMATE EDITION V2)
 # ==========================================
 
 def hitung_rsi(series, period=14):
@@ -19,6 +19,10 @@ def hitung_bollinger(series, window=20):
     std = series.rolling(window=window).std()
     return sma + (std * 2), sma - (std * 2)
 
+# [BARU] Hitung Bandwidth (Untuk deteksi Squeeze/Ledakan)
+def hitung_bollinger_bandwidth(upper, lower, middle):
+    return ((upper - lower) / middle) * 100
+
 def hitung_macd(series, fast=12, slow=26, signal=9):
     exp1 = series.ewm(span=fast, adjust=False).mean()
     exp2 = series.ewm(span=slow, adjust=False).mean()
@@ -29,6 +33,12 @@ def hitung_macd(series, fast=12, slow=26, signal=9):
 def hitung_obv(close, volume):
     obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
     return obv
+
+# [BARU] RVOL (Relative Volume) - Kunci Anti-Gorengan
+def hitung_rvol(volume, window=20):
+    avg_vol = volume.rolling(window=window).mean()
+    rvol = volume / avg_vol
+    return rvol
 
 def hitung_stochastic(high, low, close, k_window=14, d_window=3):
     low_min = low.rolling(window=k_window).min()
@@ -86,7 +96,7 @@ def hitung_fibonacci_levels(df, lookback=120):
         '1.0': recent_high
     }
 
-# [BARU] DETEKSI POLA CANDLESTICK (Pattern Recognition)
+# DETEKSI POLA CANDLESTICK (Pattern Recognition)
 def deteksi_candle_pattern(row, prev_row):
     open_p, close_p = row['Open'], row['Close']
     high_p, low_p = row['High'], row['Low']
@@ -98,28 +108,28 @@ def deteksi_candle_pattern(row, prev_row):
     
     pola = []
     
-    # 1. DOJI (Ketidakpastian / Potensi Reversal)
+    # 1. DOJI
     if body <= (range_len * 0.1) and range_len > 0:
         pola.append("Doji")
     
-    # 2. HAMMER (Reversal Bullish Kuat)
+    # 2. HAMMER
     if lower_shadow >= (body * 2) and upper_shadow <= (body * 0.5) and range_len > 0:
         pola.append("Hammer")
         
-    # 3. MARUBOZU (Momentum Penuh)
-    if body > (range_len * 0.8) and range_len > 0:
+    # 3. MARUBOZU
+    if body > (range_len * 0.85) and range_len > 0:
         if close_p > open_p: pola.append("Bullish Marubozu")
         else: pola.append("Bearish Marubozu")
     
-    # 4. BULLISH ENGULFING (Pembalikan Arah Sangat Kuat)
-    if (prev_row['Close'] < prev_row['Open']) and (close_p > open_p): # Kemarin merah, skrg hijau
+    # 4. BULLISH ENGULFING
+    if (prev_row['Close'] < prev_row['Open']) and (close_p > open_p): 
         if close_p > prev_row['Open'] and open_p < prev_row['Close']:
             pola.append("Bullish Engulfing")
 
     return pola
 
 # ==========================================
-# 2. FUNGSI AMBIL BERITA (TETAP)
+# 2. FUNGSI AMBIL BERITA
 # ==========================================
 def ambil_berita_saham(ticker):
     try:
@@ -147,7 +157,7 @@ def ambil_berita_saham(ticker):
     except: return []
 
 # ==========================================
-# 3. OTAK UTAMA: ANALISA MULTI-TIMEFRAME (MTF)
+# 3. OTAK UTAMA: ANALISA MULTI-VARIABLE (UPDATED)
 # ==========================================
 def analisa_multistrategy(ticker):
     try:
@@ -156,7 +166,6 @@ def analisa_multistrategy(ticker):
         
         # --- [MTF] AMBIL DATA DAILY & WEEKLY ---
         df = stock.history(period="1y", interval="1d")
-        # Kita ambil weekly untuk validasi tren besar
         df_weekly = stock.history(period="2y", interval="1wk")
         info = stock.info 
         
@@ -175,11 +184,21 @@ def analisa_multistrategy(ticker):
         low_price = last['Low']
         volume_now = last['Volume']
 
+        # [BARU] GAP DETECTION
+        gap_percent = (open_price - prev_close) / prev_close
+        is_gap_up = gap_percent > 0.01 # Gap naik > 1%
+
         # --- INDIKATOR DAILY ---
         sma_5 = df['Close'].rolling(window=5).mean().iloc[-1]
         sma_20 = df['Close'].rolling(window=20).mean().iloc[-1]
         sma_50 = df['Close'].rolling(window=50).mean().iloc[-1]
         sma_200 = df['Close'].rolling(window=200).mean().iloc[-1] if len(df) > 200 else 0
+        
+        # [BARU] GOLDEN CROSS
+        prev_sma50 = df['Close'].rolling(window=50).mean().iloc[-2]
+        prev_sma200 = df['Close'].rolling(window=200).mean().iloc[-2] if len(df) > 200 else 0
+        is_golden_cross = (prev_sma50 < prev_sma200) and (sma_50 > sma_200)
+
         vol_avg = df['Volume'].rolling(window=20).mean().iloc[-1]
         
         rsi = hitung_rsi(df['Close']).iloc[-1]
@@ -187,13 +206,17 @@ def analisa_multistrategy(ticker):
         last_bb_lower = bb_lower.iloc[-1]
         last_bb_upper = bb_upper.iloc[-1]
         
+        # [BARU] SQUEEZE DETECTOR
+        bandwidth = hitung_bollinger_bandwidth(bb_upper, bb_lower, sma_20).iloc[-1]
+        is_squeeze = bandwidth < 5.0 # Bandwidth sangat sempit, tanda mau meledak
+
         macd, macd_signal = hitung_macd(df['Close'])
         last_macd = macd.iloc[-1]
         last_signal = macd_signal.iloc[-1]
         
-        obv = hitung_obv(df['Close'], df['Volume'])
-        last_obv = obv.iloc[-1]
-        prev_obv = obv.iloc[-5]
+        # [BARU] RVOL (RELATIVE VOLUME)
+        rvol_series = hitung_rvol(df['Volume'])
+        last_rvol = rvol_series.iloc[-1] # Jika > 2 artinya volume 2x lipat rata2
 
         stoch_k, stoch_d = hitung_stochastic(df['High'], df['Low'], df['Close'])
         last_k = stoch_k.iloc[-1]
@@ -202,17 +225,14 @@ def analisa_multistrategy(ticker):
         vwap_series = hitung_vwap(df)
         last_vwap = vwap_series.iloc[-1]
 
-        # Indikator Premium (ADX, CMF, ATR)
         adx = hitung_adx(df['High'], df['Low'], df['Close']).iloc[-1]
         cmf = hitung_cmf(df['High'], df['Low'], df['Close'], df['Volume']).iloc[-1]
         atr = hitung_atr(df['High'], df['Low'], df['Close']).iloc[-1]
         fibs = hitung_fibonacci_levels(df)
 
-        # [BARU] POLA CANDLE
         pola_candle = deteksi_candle_pattern(last, prev)
 
-        # [BARU] ANALISA WEEKLY (BIG PICTURE)
-        # Jika Weekly Uptrend, maka sinyal Daily valid. Jika Weekly Downtrend, sinyal Daily lemah.
+        # --- ANALISA WEEKLY ---
         weekly_trend = "NEUTRAL"
         if not df_weekly.empty and len(df_weekly) > 50:
             w_sma_50 = df_weekly['Close'].rolling(window=50).mean().iloc[-1]
@@ -229,108 +249,97 @@ def analisa_multistrategy(ticker):
         is_uptrend_ma = last_price > sma_50
 
         # ==========================================
-        # SCORING ENGINE V3 (MTF + CANDLE + INDIKATOR)
+        # SCORING ENGINE V4 (LEBIH AKURAT)
         # ==========================================
         scores = {"BSJP": 0, "BPJS": 0, "SCALPING": 0, "SWING": 0, "ARA": 0, "INVEST": 0}
         reasons = []
 
-        # PEMBERIAN SKOR DASAR BERDASARKAN TREN MINGGUAN (Filter Utama)
-        base_bonus = 0
+        # 1. SCORE DASAR (WEEKLY TREND)
         if weekly_trend == "BULLISH": 
-            base_bonus = 10
+            for k in scores: scores[k] += 10
             reasons.append("Weekly Uptrend")
-        elif weekly_trend == "BEARISH":
-            base_bonus = -10 # Kurangi skor jika melawan arus besar
-
-        # BONUS SKOR JIKA ADA POLA CANDLE BAGUS
-        candle_bonus = 0
-        if "Hammer" in pola_candle: candle_bonus += 15
-        if "Bullish Engulfing" in pola_candle: candle_bonus += 20
-        if "Bullish Marubozu" in pola_candle: candle_bonus += 10
-        if candle_bonus > 0: reasons.append(f"Pola: {pola_candle[0]}")
-
-        # 1. ARA HUNTER
-        if change_pct > 0.10: scores["ARA"] += 40
-        if volume_now > (vol_avg * 3): scores["ARA"] += 35 
+        
+        # 2. SCORE VOLUME (VALIDASI UTAMA)
+        if last_rvol > 1.5: # Volume 1.5x rata-rata
+            for k in ["SCALPING", "ARA", "BSJP"]: scores[k] += 15
+            reasons.append("High Volume")
+        
+        # 3. ARA HUNTER (Agresif)
+        if change_pct > 0.10 and last_rvol > 2.0: scores["ARA"] += 40
+        if is_gap_up and last_price > open_price: scores["ARA"] += 20
         if last_price >= (high_price * 0.98): scores["ARA"] += 25
-        if money_inflow: scores["ARA"] += 20
-        scores["ARA"] += candle_bonus
+        if money_inflow: scores["ARA"] += 15
 
-        # 2. SCALPING
-        if atr > (last_price * 0.01): scores["SCALPING"] += 20
-        if last_price > last_vwap: scores["SCALPING"] += 35 
-        if volume_now > vol_avg: scores["SCALPING"] += 20
-        if rsi > 50 and rsi < 75: scores["SCALPING"] += 15
-        if "Bullish Marubozu" in pola_candle: scores["SCALPING"] += 15 # Marubozu sinyal lanjut naik
+        # 4. SCALPING (Cepat)
+        if atr > (last_price * 0.015): scores["SCALPING"] += 20 # Volatilitas cukup
+        if last_price > last_vwap: scores["SCALPING"] += 30 
+        if last_rvol > 1.2: scores["SCALPING"] += 20
+        if "Bullish Marubozu" in pola_candle: scores["SCALPING"] += 15
 
-        # 3. SWING (Sangat dipengaruhi Weekly Trend)
-        scores["SWING"] += base_bonus
+        # 5. SWING (Santai & Trend)
         if is_trending and is_uptrend_ma: scores["SWING"] += 35
-        if last_macd > last_signal: scores["SWING"] += 20
-        if money_inflow: scores["SWING"] += 20 
-        # Pullback Strategy
+        if is_golden_cross: 
+            scores["SWING"] += 30
+            reasons.append("Golden Cross")
+        if is_squeeze:
+            scores["SWING"] += 20
+            reasons.append("Bollinger Squeeze (Potensi Ledakan)")
+        if last_macd > last_signal: scores["SWING"] += 15
+        
+        # Pullback Strategy untuk Swing
         dist_to_ma20 = (last_price - sma_20) / sma_20
-        if is_uptrend_ma and -0.02 < dist_to_ma20 < 0.03: scores["SWING"] += 25
-        # Cek Fib 0.618
-        if abs(last_price - fibs['0.618']) < (last_price * 0.02):
-             scores["SWING"] += 20
-             reasons.append("Pantulan Fib 0.618")
-        scores["SWING"] += candle_bonus
+        if is_uptrend_ma and -0.03 < dist_to_ma20 < 0.02: 
+            scores["SWING"] += 25
+            reasons.append("Buy on Weakness (Dekat MA20)")
 
-        # 4. BSJP
-        if last_price > open_price and last_price > sma_5: scores["BSJP"] += 30
-        if money_inflow: scores["BSJP"] += 30
-        if volume_now > vol_avg: scores["BSJP"] += 25
-        if "Hammer" in pola_candle or "Bullish Engulfing" in pola_candle: scores["BSJP"] += 20
+        # 6. BSJP (Beli Sore Jual Pagi)
+        # Syarat: Close kuat di high, volume besar, trend naik
+        if last_price > open_price and last_price >= (high_price * 0.97): scores["BSJP"] += 35
+        if last_rvol > 1.0 and money_inflow: scores["BSJP"] += 30
+        if last_price > sma_5: scores["BSJP"] += 20
 
-        # 5. BPJS
-        if rsi < 30: scores["BPJS"] += 40 
-        if last_price < last_bb_lower: scores["BPJS"] += 30
-        if last_k < 20 and last_k > last_d: scores["BPJS"] += 25 
-        if last_price <= fibs['0.786']: scores["BPJS"] += 20
-        if "Doji" in pola_candle and rsi < 30: 
-            scores["BPJS"] += 20 # Doji di area oversold = potensi reversal
-            reasons.append("Doji Reversal")
-
-        # 6. INVEST
+        # 7. BPJS (Beli Pagi Jual Sore)
+        # Syarat: Gap Up pagi hari, volume ledak di awal, atau reversal di support
+        if is_gap_up and last_rvol > 2.0: 
+            scores["BPJS"] += 40
+            reasons.append("Gap Up + Vol Besar")
+        if rsi < 30 and "Hammer" in pola_candle: 
+            scores["BPJS"] += 30
+            reasons.append("Oversold Reversal")
+        
+        # 8. INVEST
         if pe < 15 and pe > 0: scores["INVEST"] += 25
         if pbv < 1.5: scores["INVEST"] += 25
         if last_price > sma_200: scores["INVEST"] += 30 
         if weekly_trend == "BULLISH": scores["INVEST"] += 20
 
         # ==========================================
-        # KEPUTUSAN FINAL & RISK MANAGEMENT (SL/TP)
+        # KEPUTUSAN FINAL
         # ==========================================
         best_type = max(scores, key=scores.get)
         best_score = scores[best_type]
         
-        # [SMART SUPPORT]
+        # SUPPORT & RESISTANCE DINAMIS
         candidates = [sma_20, sma_50, last_bb_lower, last_vwap, fibs['0.5'], fibs['0.618']]
         valid_supports = [x for x in candidates if x < (last_price * 0.995)]
         harga_support = max(valid_supports) if valid_supports else (last_price - (atr * 2))
 
-        # [BARU] TARGET PRICE & STOP LOSS (Risk Reward Ratio 1:2)
-        # Stop Loss ditaruh sedikit di bawah support atau 1.5x ATR
+        # Stop Loss & Target
         stop_loss = harga_support - (atr * 0.5)
         risk = last_price - stop_loss
-        # Target Profit minimal 2x dari Risk (RR 1:2)
-        target_price = last_price + (risk * 2)
+        target_price = last_price + (risk * 2.5) # RR 1:2.5
 
-        # --- FINAL FILTER ---
+        # VERDICT
         verdict = "WAIT"
-        
-        # Logic Veto yang diperkuat MTF
         if weekly_trend == "BEARISH" and best_type == "SWING":
-            best_score -= 30
-            reasons.append("⚠️ Weekly Bearish (Dangerous for Swing)")
+            best_score -= 30 # Hukuman berat swing di downtrend
+            reasons.append("⚠️ Weekly Bearish")
 
         if best_score >= 85: verdict = "STRONG BUY 🔥"
         elif best_score >= 65: verdict = "BUY ✅"
         elif best_score >= 50: verdict = "NEUTRAL ⚠️"
         else: verdict = "AVOID / SELL"
         
-        if money_inflow: reasons.append("Bandar Masuk")
-
         return {
             "score": int(best_score),
             "verdict": verdict,

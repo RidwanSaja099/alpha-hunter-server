@@ -4,6 +4,7 @@ import concurrent.futures
 import yfinance as yf
 from flask import Flask, jsonify, request
 from dotenv import load_dotenv
+import math
 
 # --- IMPORT LIBRARY AI ---
 from google import genai
@@ -22,21 +23,17 @@ app = Flask(__name__)
 # 0. KONFIGURASI MULTI-AI (SISTEM ANTI-LIMIT)
 # ==========================================
 
-# Ambil API Keys dari Environment
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Inisialisasi Clients
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
 
 def dapatkan_analisa_ai_cerdas(prompt):
-    """
-    Sistem Cerdas: Mencoba Gemini -> Gagal? -> Coba Groq -> Gagal? -> Coba DeepSeek
-    """
-    # 1. COBA GEMINI (Prioritas Utama)
+    """Sistem Cerdas: Mencoba Gemini -> Gagal? -> Coba Groq -> Gagal? -> Coba DeepSeek"""
+    # 1. COBA GEMINI
     if client_gemini:
         try:
             print("🤖 Menggunakan Gemini AI...")
@@ -45,10 +42,9 @@ def dapatkan_analisa_ai_cerdas(prompt):
                 contents=prompt
             )
             return response.text.strip()
-        except Exception as e:
-            print(f"⚠️ Gemini Limit/Error: {e}")
+        except Exception as e: print(f"⚠️ Gemini Limit/Error: {e}")
 
-    # 2. COBA GROQ (Backup Tercepat - Llama 3)
+    # 2. COBA GROQ
     if client_groq:
         try:
             print("⚡ Gemini sibuk, beralih ke Groq (Llama 3)...")
@@ -57,10 +53,9 @@ def dapatkan_analisa_ai_cerdas(prompt):
                 model="llama-3.3-70b-versatile",
             )
             return chat_completion.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"⚠️ Groq Error: {e}")
+        except Exception as e: print(f"⚠️ Groq Error: {e}")
 
-    # 3. COBA DEEPSEEK (Backup Terpintar)
+    # 3. COBA DEEPSEEK
     if client_deepseek:
         try:
             print("🧠 Groq sibuk, beralih ke DeepSeek...")
@@ -69,8 +64,7 @@ def dapatkan_analisa_ai_cerdas(prompt):
                 messages=[{"role": "user", "content": prompt}],
             )
             return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"⚠️ DeepSeek Error: {e}")
+        except Exception as e: print(f"⚠️ DeepSeek Error: {e}")
 
     return "🤖 Maaf, semua otak AI sedang istirahat. Gunakan data teknikal di atas sebagai panduan."
 
@@ -97,7 +91,7 @@ def get_cached_analysis(ticker):
         CACHE_DATA[ticker] = {'data': data, 'timestamp': now}
     return data
 
-# FUNGSI AMBIL DATA LIVE + FUNDAMENTAL (TIDAK DIUBAH)
+# FUNGSI AMBIL DATA LIVE + FUNDAMENTAL (TIDAK HILANG)
 def ambil_data_live_lengkap(ticker_lengkap):
     try:
         stock = yf.Ticker(ticker_lengkap)
@@ -140,7 +134,6 @@ def ambil_data_live_lengkap(ticker_lengkap):
     except:
         return "Data Fundamental & Live Tidak Tersedia."
 
-# FUNGSI MARKET SENTINEL (TIDAK DIUBAH)
 def cek_kondisi_market():
     now = time.time()
     if now - MARKET_STATUS['last_check'] < 900: 
@@ -160,28 +153,34 @@ def cek_kondisi_market():
     return MARKET_STATUS['condition']
 
 # ==========================================
-# 2. LOGIKA HITUNGAN PLAN (BAGIAN INI DI-UPDATE TOTAL)
+# 2. LOGIKA HITUNGAN PLAN (PERBAIKAN ILMIAH & PSIKOLOGIS)
 # ==========================================
 
-# [UPDATE BAGIAN INI] Menambahkan Aturan Fraksi Harga (Tick Rules) BEI
+# 1. Aturan Fraksi Harga (Tick) BEI
 def get_tick_size(harga):
-    """Menentukan kelipatan harga sesuai aturan Bursa Efek Indonesia"""
     if harga < 200: return 1
     elif harga < 500: return 2
     elif harga < 2000: return 5
     elif harga < 5000: return 10
     else: return 25
 
-# [UPDATE BAGIAN INI] Fungsi pembulatan agar harga tidak ganjil
+# 2. Fungsi Pembulatan ke Tick Terdekat
 def bulatkan_ke_tick(harga):
     if harga <= 0: return 0
     tick = get_tick_size(harga)
     return int(round(harga / tick) * tick)
 
+# 3. Fungsi Pembulatan Target Psikologis (Dinamis)
+def get_psychological_step(harga):
+    """Menentukan kelipatan angka bulat yang wajar berdasarkan harga"""
+    if harga < 200: return 10      # Harga 50-200, target bulat tiap 10 perak
+    elif harga < 1000: return 50   # Harga 200-1000, target bulat tiap 50 perak (550, 600)
+    elif harga < 5000: return 100  # Harga 1000-5000, target bulat tiap 100 perak (2100, 2200)
+    else: return 250               # Harga >5000, target bulat tiap 250 perak (5250, 5500)
+
 def format_angka(nilai):
     return "{:,}".format(int(nilai)).replace(",", ".")
 
-# [UPDATE BAGIAN INI] Logika Ilmiah (Fibo + Psikologis + Fraksi)
 def hitung_plan_sakti(data_analisa, ticker_fibo=None):
     harga_sekarang = data_analisa.get('last_price', 0)
     harga_support = data_analisa.get('support', 0)
@@ -189,69 +188,80 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
 
     if harga_sekarang <= 0: return "-", 0, "-"
     
-    # 1. ENTRY: Jangan antri pas di support (sering gak dapet), naikkan 2 tick (Front Running)
-    if harga_support == 0: harga_support = int(harga_sekarang * 0.95)
+    # --- A. PENENTUAN ENTRY (KAIDAH FRONT RUNNING) ---
+    # Jika support tidak terdeteksi (0), gunakan 96% harga sekarang (diskon wajar)
+    if harga_support == 0: harga_support = int(harga_sekarang * 0.96)
     
     tick_size = get_tick_size(harga_support)
+    
+    # Entry Ideal: Support + 2-3 Tick (Supaya dapet barang, jangan pasang pas di support)
     buy_low = bulatkan_ke_tick(harga_support + (2 * tick_size))
-    buy_high = bulatkan_ke_tick(buy_low + (3 * tick_size)) # Area toleransi beli
+    # Area Toleransi: Sampai 5 Tick dari Support
+    buy_high = bulatkan_ke_tick(buy_low + (3 * tick_size)) 
     
     status_entry = ""
-    if harga_sekarang > (buy_high * 1.03): status_entry = "\n(Wait Pullback)"
-    # Kalau harga sekarang dibawah buy low (diskon), pakai harga sekarang
-    if harga_sekarang < buy_low: buy_low = harga_sekarang
+    # Cek apakah harga sudah lari jauh (>3% dari area beli ideal)
+    if harga_sekarang > (buy_high * 1.03): 
+        status_entry = "\n⚠️ Harga Lari (Wait Pullback)"
+    # Jika harga sekarang malah lebih murah dari buy_low (sedang jebol dikit/diskon), sesuaikan
+    elif harga_sekarang < buy_low:
+        buy_low = harga_sekarang
 
     entry_str = f"{format_angka(buy_low)} - {format_angka(buy_high)}{status_entry}"
     
-    # 2. STOP LOSS: Beri napas 4 tick di bawah support agar tidak kena "False Break"
-    sl_raw = harga_support - (4 * get_tick_size(harga_support))
+    # --- B. PENENTUAN STOP LOSS (KAIDAH FALSE BREAK) ---
+    # SL diletakkan DI BAWAH Support, kasih jarak 5-6 Tick biar gak kena "kocokan bandar"
+    sl_raw = harga_support - (6 * get_tick_size(harga_support))
     sl = bulatkan_ke_tick(sl_raw)
     
-    # 3. TARGET PRICE (TP): Menggunakan Fibonacci & Psikologis
+    # --- C. PENENTUAN TARGET PROFIT (FIBONACCI & PSIKOLOGIS) ---
+    
     if tipe_trading == "ARA": 
-        tp_str = "HOLD SAMPAI ARA 🚀"
+        tp_str = "HOLD SAMPAI ARA 🚀 (Trailing Stop)"
         sl = bulatkan_ke_tick(harga_sekarang * 0.92)
     elif tipe_trading == "INVEST":
-        tp_str = "HOLD JANGKA PANJANG"
+        tp_str = "HOLD JANGKA PANJANG (Cek Fundamental)"
         sl = bulatkan_ke_tick(harga_sekarang * 0.85)
     else:
-        # Default TP jika history gagal ditarik
-        tp1 = bulatkan_ke_tick(buy_low * 1.04)
-        tp2 = bulatkan_ke_tick(buy_low * 1.08)
+        # Default TP (Math basic)
+        tp1 = bulatkan_ke_tick(buy_low * 1.03) # 3% (Tutup fee + kopi)
+        tp2 = bulatkan_ke_tick(buy_low * 1.07) # 7% (Profit standar swing)
 
-        # Coba Tarik Fibonacci dari History 1 Bulan Terakhir
+        # Coba Gunakan Fibonacci jika ticker_fibo ada (Mode Detail)
         if ticker_fibo:
             try:
+                # Tarik data 1 bulan ke belakang
                 hist = yf.Ticker(ticker_fibo).history(period="1mo")
                 if not hist.empty:
                     swing_high = hist['High'].max()
                     swing_low = hist['Low'].min()
                     swing_range = swing_high - swing_low
                     
-                    # TP1: Resistensi Swing High Sebelumnya
+                    # TP1: Resistance Terdekat (Swing High sebelumnya)
                     tp1_raw = swing_high
                     # TP2: Fibonacci Extension 1.618 (Golden Ratio)
                     tp2_raw = swing_low + (swing_range * 1.618)
                     
-                    # Validasi: TP1 minimal untung 3% (biar nutup fee)
-                    if tp1_raw < (buy_low * 1.03): tp1_raw = buy_low * 1.03
+                    # Validasi: TP1 tidak boleh terlalu dekat dengan entry (minimal 2%)
+                    if tp1_raw < (buy_low * 1.02): tp1_raw = buy_low * 1.03
                     
                     tp1 = bulatkan_ke_tick(tp1_raw)
                     tp2 = bulatkan_ke_tick(tp2_raw)
             except: pass
 
-        # TP3: Target Psikologis (Angka Bulat)
-        # Manusia suka TP di angka cantik: 500, 1000, 2000, 5000
-        if tp2 < 500: target_bulat = 500
-        elif tp2 < 1000: target_bulat = 1000
-        elif tp2 < 2000: target_bulat = 2000
-        elif tp2 < 5000: target_bulat = 5000
-        else: target_bulat = int(tp2 / 1000 + 1) * 1000
+        # TP3: TARGET PSIKOLOGIS (PEMBULATAN WAJAR)
+        # Mencari angka bulat di atas TP2, tapi langkahnya dinamis
+        step = get_psychological_step(tp2)
         
-        if target_bulat <= tp2: target_bulat = bulatkan_ke_tick(tp2 * 1.05)
-        tp3 = target_bulat
+        # Contoh: TP2=2030, step=100 -> Target bulat berikutnya = 2100
+        tp3_raw = (int(tp2 / step) + 1) * step
+        
+        # Pastikan TP3 tidak sama dengan TP2 (harus lebih tinggi)
+        if tp3_raw <= tp2: tp3_raw += step
+        
+        tp3 = bulatkan_ke_tick(tp3_raw)
 
-        tp_str = (f"🎯 TP1: {format_angka(tp1)} (Resist)\n"
+        tp_str = (f"🎯 TP1: {format_angka(tp1)} (Resist/Aman)\n"
                   f"🚀 TP2: {format_angka(tp2)} (Fibo 1.618)\n"
                   f"💎 TP3: {format_angka(tp3)} (Psikologis)")
 
@@ -271,10 +281,10 @@ def get_stock_detail():
     if data['last_price'] == 0:
         return jsonify({"error": "Not Found", "analysis": {"score":0, "verdict":"ERR", "reason":"-", "type":"-"}})
     
-    # Ambil Data LIVE & Fundamental
+    # Ambil Data LIVE
     info_live = ambil_data_live_lengkap(ticker_lengkap)
 
-    # GENERATE PARAMETER SKOR TEKNIKAL
+    # Generate Skor Teknikal
     score = data['score']
     verdict = data['verdict']
     
@@ -296,12 +306,12 @@ def get_stock_detail():
     text_parameter = "\n".join(parameter_list)
     rincian_teknikal = f"🔍 **FAKTOR TEKNIS (Skor {score}):**\n{text_parameter}"
 
-    # PERSIAPAN DATA UNTUK AI
+    # Persiapan AI
     list_berita = ambil_berita_saham(ticker_lengkap)
     judul_berita = [b['title'] for b in list_berita[:3]] 
     teks_berita = "\n- ".join(judul_berita) if judul_berita else "Tidak ada berita spesifik 24 jam terakhir."
 
-    # PROMPT AI SUPER LENGKAP
+    # [UPDATE FITUR] Prompt AI dengan Permintaan "Second Opinion"
     prompt = f"""
     Kamu adalah Veteran Pasar Modal Indonesia. Analisa saham: {ticker_polos}.
     
@@ -310,40 +320,40 @@ def get_stock_detail():
     {info_live}
     - BERITA TERAKHIR: {teks_berita}
     
-    TUGAS ANALISIS (Jawab 5 Poin Ini):
+    TUGAS ANALISIS (Jawab 6 Poin Ini dengan Tajam):
     
     1. 🕵️‍♂️ **Analisa Dibalik Layar**
-       (Kenapa bergerak begini? Lihat 'Data Live' di atas, apakah candle hari ini kuat atau lemas? Ada aksi bandar/korporasi?).
+       (Kenapa bergerak begini? Lihat 'Data Live', apakah candle kuat atau lemas? Ada aksi bandar?).
        
     2. 📊 **Cek Valuasi & Fundamental**
-       (Murah/Mahal berdasarkan data PER/PBV di atas? Apakah perusahaan sehat?).
+       (Murah/Mahal berdasarkan PER/PBV? Perusahaan sehat?).
        
     3. ⏱️ **Timing & Strategi Masuk**
        (Lihat posisi intraday. Apakah ini waktu yang tepat untuk "HAKA" atau "Antri Bawah"?).
 
     4. 🎯 **GAYA TRADING PALING COCOK (PILIH SATU)**
-       Pilih yang paling masuk akal berdasarkan data live hari ini:
-       - ⚡ **BPJS (Beli Pagi Jual Sore)**: Jika candle hijau tebal & volume tinggi sejak pagi.
-       - 🌙 **BSJP (Beli Sore Jual Pagi)**: Jika harga penutupan kuat di dekat High (Akumulasi sore).
-       - 🏎️ **SCALPING/FAST TRADE**: Jika volatilitas tinggi (High-Low range lebar).
-       - 🌊 **SWING TRADING**: Jika trend uptrend rapi & santai.
-       - 💰 **INVESTASI/NABUNG**: Jika fundamental bagus & harga diskon.
-       - ⚠️ **HINDARI DULU**: Jika downtrend atau candle merah pekat.
-       *(Jelaskan alasan pemilihanmu dalam 1 kalimat)*.
+       - ⚡ **BPJS**: Jika candle hijau tebal pagi-pagi.
+       - 🌙 **BSJP**: Jika closing kuat di High sore hari.
+       - 🏎️ **SCALPING**: Jika volatilitas tinggi.
+       - 🌊 **SWING**: Jika uptrend rapi.
+       - 💰 **INVESTASI**: Jika fundamental bagus & murah.
+       - ⚠️ **HINDARI**: Jika downtrend.
        
-    5. ⚖️ **VERDICT AKHIR**
+    5. 🔢 **PLAN ANGKA (SECOND OPINION)**
+       (Berdasarkan intuisimu sebagai Veteran, berikan angka Entry, Stop Loss, dan TP versimu sendiri. Apakah setuju dengan perhitungan teknikal atau punya pandangan lain? Sebutkan angkanya).
+       
+    6. ⚖️ **VERDICT AKHIR**
        (Kesimpulan Tegas: LAYAK BELI / TIDAK / WAIT AND SEE).
        
     Gunakan bahasa trader Indonesia yang asik.
     """
 
-    # PANGGIL MULTI-AI
+    # Panggil Multi-AI
     analisa_ai_cerdas = dapatkan_analisa_ai_cerdas(prompt)
 
-    # GABUNGKAN SEMUA
     reason_final = f"{rincian_teknikal}\n\n====================\n{analisa_ai_cerdas}"
 
-    # [UPDATE BAGIAN INI] Panggil rumus plan baru dengan Ticker Fibo
+    # Panggil Rumus Plan (Aktifkan Fibo History untuk Detail)
     entry, sl, tp = hitung_plan_sakti(data, ticker_fibo=ticker_lengkap)
     
     pct = data.get('change_pct', 0)
@@ -366,7 +376,7 @@ def get_stock_detail():
     return jsonify(stock_detail)
 
 # ==========================================
-# 4. ENDPOINT SCANNER (TETAP SAMA TAPI UPDATE PANGGILAN RUMUS)
+# 4. ENDPOINT SCANNER (TETAP SAMA)
 # ==========================================
 def process_single_stock(kode, target_strategy, min_score_needed):
     try:
@@ -381,7 +391,7 @@ def process_single_stock(kode, target_strategy, min_score_needed):
         elif target_strategy not in ['ALL', 'WATCHLIST']:
             if target_strategy not in tipe_ditemukan: return None
 
-        # [UPDATE BAGIAN INI] Scanner pakai rumus baru tapi tanpa Fibo biar cepat (ticker_fibo=None)
+        # Scanner pakai rumus cepat (tanpa fetch history fibo)
         entry, sl, tp = hitung_plan_sakti(data, ticker_fibo=None)
         
         pct = data.get('change_pct', 0)

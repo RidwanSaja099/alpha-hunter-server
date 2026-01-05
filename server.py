@@ -8,10 +8,11 @@ from dotenv import load_dotenv
 
 # --- IMPORT LIBRARY AI ---
 from google import genai
-from google.genai import types # Untuk Google Search
+from google.genai import types # [PENTING] Untuk Google Search Tool
 from groq import Groq 
 from openai import OpenAI 
 
+# Load environment variables
 load_dotenv()
 
 # Pastikan file rumus_saham.py ada di folder yang sama (V5 Sniper)
@@ -31,7 +32,7 @@ client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
 
 # ==========================================
-# 1. BAGIAN 1: GEMINI SEBAGAI "WARTAWAN" (PENCARI FAKTA)
+# 1. AGEN 1: GEMINI SEBAGAI "WARTAWAN" (PENCARI FAKTA)
 # ==========================================
 def agen_pencari_berita_gemini(ticker):
     """
@@ -44,7 +45,7 @@ def agen_pencari_berita_gemini(ticker):
     try:
         print(f"🌍 Gemini sedang browsing info tentang {ticker}...")
         prompt_news = f"""
-        TUGAS KHUSUS: Cari berita TERBARU dan VALID mengenai saham {ticker} (Indonesia).
+        TUGAS KHUSUS: Cari berita TERBARU dan VALID mengenai saham {ticker} (Indonesia) hari ini atau minggu ini.
         Gunakan Google Search.
         
         FOKUS PADA:
@@ -53,7 +54,7 @@ def agen_pencari_berita_gemini(ticker):
         
         OUTPUT:
         Buatlah RINGKASAN PADAT (maksimal 3 poin penting). 
-        Jika tidak ada berita penting dalam 1 minggu terakhir, katakan "NIL".
+        Jika tidak ada berita penting dalam 1 minggu terakhir, katakan "TIDAK ADA BERITA SIGNIFIKAN".
         JANGAN BERIKAN ANALISA/REKOMENDASI. HANYA FAKTA.
         """
         
@@ -69,10 +70,11 @@ def agen_pencari_berita_gemini(ticker):
         return response.text.strip()
     except Exception as e:
         print(f"⚠️ Gemini Error: {e}")
-        return "Gagal mengambil berita live (Limit/Error)."
+        # Fallback jika Search Gagal
+        return "Gagal mengambil berita live (Limit/Error). Gunakan data Yahoo."
 
 # ==========================================
-# 2. BAGIAN 2: GROQ/DEEPSEEK SEBAGAI "KEPALA ANALIS"
+# 2. AGEN 2: GROQ/DEEPSEEK SEBAGAI "KEPALA ANALIS"
 # ==========================================
 def agen_analis_utama(data_context):
     """
@@ -117,7 +119,7 @@ def agen_analis_utama(data_context):
             return res.choices[0].message.content.strip()
         except: pass
     
-    # Emergency Backup: Balik ke Gemini kalau 2 AI diatas mati (Jarang terjadi)
+    # Emergency Backup: Balik ke Gemini (Mode Standar) kalau 2 AI diatas mati
     if client_gemini:
         try:
             return client_gemini.models.generate_content(
@@ -153,7 +155,7 @@ DATABASE_SYARIAH = [
 MARKET_UNIVERSE = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "UNTR", "ICBP", "INDF", "GOTO", "MDKA", "ANTM", "INCO", "PGAS", "ADRO", "PTBA", "BRPT", "BREN", "AMMN"]
 WATCHLIST = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "GOTO", "ANTM", "ADRO", "UNTR"]
 
-# FUNGSI VALIDASI HISTORI (V5 SNIPER)
+# FUNGSI VALIDASI HISTORI (V5 SNIPER - ANTI AMPAS)
 def validasi_histori_panjang(ticker_lengkap, data_short):
     try:
         hist = yf.Ticker(ticker_lengkap).history(period="1y")
@@ -244,7 +246,7 @@ def cek_kondisi_market():
     return MARKET_STATUS['condition']
 
 # ==========================================
-# 4. LOGIKA PLAN SAKTI (V5)
+# 4. LOGIKA PLAN SAKTI (FRAKSI, FIBO, PSIKOLOGI)
 # ==========================================
 def get_tick_size(harga):
     if harga < 200: return 1
@@ -276,6 +278,7 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
 
     if harga_sekarang <= 0: return "-", 0, "-"
     
+    # Entry Strategy: Front Running Support
     base_support = support_short
     tick_size = get_tick_size(base_support)
     buy_low = bulatkan_ke_tick(base_support + (2 * tick_size))
@@ -287,6 +290,7 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
 
     entry_str = f"{format_angka(buy_low)} - {format_angka(buy_high)}{status_entry}"
 
+    # Stop Loss Strategy: Under Support
     sl_raw = base_support - (6 * get_tick_size(base_support))
     sl = bulatkan_ke_tick(sl_raw)
 
@@ -297,7 +301,10 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
         tp_str = "HOLD JANGKA PANJANG"
         sl = bulatkan_ke_tick(harga_sekarang * 0.85)
     else:
+        # TP1: Aman
         tp1 = bulatkan_ke_tick(buy_low * 1.04)
+        
+        # TP2: Historis / Fibo
         max_1y = hist_data.get('max_1y', 0)
         if max_1y > buy_low and max_1y < (buy_low * 1.5): tp2_raw = max_1y
         else: tp2_raw = buy_low * 1.08
@@ -314,6 +321,8 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
             except: pass
         
         tp2 = bulatkan_ke_tick(tp2_raw)
+        
+        # TP3: Psikologis
         step = get_psychological_step(tp2)
         tp3_raw = (int(tp2 / step) + 1) * step
         if tp3_raw <= tp2: tp3_raw += step
@@ -326,7 +335,7 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
     return entry_str, sl, tp_str
 
 # ==========================================
-# 5. ENDPOINT DETAIL (ESTAFET AI)
+# 5. ENDPOINT DETAIL (CORE SYSTEM: AI ESTAFET)
 # ==========================================
 @app.route('/api/stock-detail', methods=['GET'])
 def get_stock_detail():
@@ -355,9 +364,11 @@ def get_stock_detail():
     teks_yahoo = "\n- ".join(headlines_yahoo) if headlines_yahoo else "-"
 
     # 3. [LANGKAH 1] SURUH GEMINI CARI FAKTA BARU
+    # Ini fitur utama update kali ini: Gemini mencari fakta di luar data Yahoo
     laporan_fakta_gemini = agen_pencari_berita_gemini(ticker_polos)
 
     # 4. [LANGKAH 2] KIRIM SEMUA DATA KE GROQ/DEEPSEEK
+    # Data dikemas jadi satu konteks
     data_context = f"""
     SAHAM: {ticker_polos}
     
@@ -368,16 +379,17 @@ def get_stock_detail():
     
     [DATA BERITA]
     - Dari Yahoo: {teks_yahoo}
-    - LAPORAN WARTAWAN LAPANGAN (GEMINI):
+    - LAPORAN WARTAWAN LAPANGAN (GEMINI - GOOGLE SEARCH):
       "{laporan_fakta_gemini}"
     """
     
+    # Analis (Groq/DeepSeek) membuat keputusan
     analisa_final = agen_analis_utama(data_context)
     
     rincian_teknikal = f"🔍 **SKOR {score} ({verdict})**\n"
     if catatan_histori != "Valid": rincian_teknikal += f"⚠️ {catatan_histori}\n"
 
-    # Gabungkan Laporan Fakta + Analisa Final
+    # Gabungkan Laporan Fakta + Analisa Final untuk ditampilkan ke User
     reason_final = f"{rincian_teknikal}\n\n🌍 **LAPORAN FAKTA (GEMINI):**\n{laporan_fakta_gemini}\n\n====================\n🧠 **ANALISA FINAL:**\n{analisa_final}"
     
     pct = data.get('change_pct', 0)
@@ -400,7 +412,7 @@ def get_stock_detail():
     return jsonify(stock_detail)
 
 # ==========================================
-# 6. SCANNER & WATCHLIST
+# 6. SCANNER & WATCHLIST (TETAP SAMA)
 # ==========================================
 def process_single_stock(kode, target_strategy, min_score_needed):
     try:

@@ -6,7 +6,7 @@ import yfinance as yf
 from google import genai 
 from dotenv import load_dotenv 
 
-# Load environment variables
+# Load environment variables dari file .env (jika ada di laptop)
 load_dotenv()
 
 # Pastikan file rumus_saham.py ada di folder yang sama
@@ -15,10 +15,13 @@ from rumus_saham import analisa_multistrategy, ambil_berita_saham
 app = Flask(__name__)
 
 # ==========================================
-# 0. KONFIGURASI AI GEMINI (LOGIKA AMAN)
+# 0. KONFIGURASI AI GEMINI (LOGIKA AMAN & FALLBACK)
 # ==========================================
 
-# Prioritas: Environment Variable (Railway) -> File .env (Laptop) -> Default Hardcoded
+# Prioritas: 
+# 1. Environment Variable (Saat di Railway)
+# 2. File .env (Saat di Laptop)
+# 3. String Hardcoded (Cadangan terakhir, HAPUS ini jika ingin upload ke GitHub public)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAOcwQyQOkVnM0DyFPsBvS0PaQpoUvLGRo") 
 
 # Inisialisasi Client
@@ -57,7 +60,7 @@ def analisa_dengan_gemini(ticker, data_teknikal, berita_list):
         judul_berita = [b['title'] for b in berita_list[:3]] 
         teks_berita = "\n- ".join(judul_berita) if judul_berita else "Tidak ada berita spesifik hari ini."
 
-        # 2. Buat Prompt YANG LEBIH TAJAM & ANALITIS
+        # 2. Buat Prompt YANG LEBIH TAJAM & ANALITIS (CAUSALITY)
         prompt = f"""
         Bertindaklah sebagai Pakar Analis Pasar Modal Indonesia (IDX) yang Kritis.
         Analisa Saham: {ticker}.
@@ -73,14 +76,13 @@ def analisa_dengan_gemini(ticker, data_teknikal, berita_list):
         
         TUGAS UTAMA (ANALISA CAUSALITY/SEBAB-AKIBAT):
         Jelaskan *MENGAPA* saham ini bergerak {data_teknikal['verdict']}? 
-        Jangan hanya mengulang data di atas, tapi gunakan pengetahuanmu tentang sektor industri, makro ekonomi, atau psikologi pasar saat ini.
+        Jangan hanya mengulang data di atas. Gunakan logikamu untuk menghubungkan berita/sektor dengan teknikal.
         
-        Poin Analisa:
+        Poin Analisa yang wajib ada:
         1. Apa pemicu utamanya? (Kinerja Keuangan? Harga Komoditas? Atau sekadar pantulan teknikal?)
-        2. Jika sinyal BUY: Apakah ini valid atau jebakan? 
-        3. Jika sinyal SELL/NEUTRAL: Apa risiko terbesarnya?
+        2. Analisis Risiko: Apa yang harus diwaspadai trader besok?
         
-        Jawab dalam 1 paragraf yang padat, tajam, dan berwawasan luas. Awali dengan emoji 🧠.
+        Jawab dalam 1 paragraf yang padat (maksimal 3-4 kalimat), tajam, dan berwawasan luas. Awali dengan emoji 🧠.
         """
 
         # 3. Kirim ke AI
@@ -283,6 +285,7 @@ def get_stock_detail():
 
     # 2. [UPDATE] TANYA GEMINI
     analisa_ai_tambahan = ""
+    # Cek apakah key sudah diisi valid
     if GEMINI_API_KEY and len(GEMINI_API_KEY) > 20:
          print(f"🤖 Bertanya ke Gemini tentang {ticker_polos}...")
          analisa_ai_tambahan = analisa_dengan_gemini(ticker_polos, data, list_berita)
@@ -326,7 +329,10 @@ def remove_watchlist():
     return jsonify({"message": "Success", "current_list": WATCHLIST})
 
 if __name__ == '__main__':
-    # Port untuk Railway
+    # [PENTING] Pengaturan Port untuk Railway
+    # Railway akan memberikan port via environment variable "PORT"
+    # Jika dijalankan di laptop, default ke port 5000
     port = int(os.environ.get("PORT", 5000))
+    
     print(f"🚀 Alpha Hunter V3 Server berjalan di Port: {port}")
     app.run(host='0.0.0.0', port=port, debug=True)

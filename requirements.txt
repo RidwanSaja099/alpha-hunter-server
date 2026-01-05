@@ -4,9 +4,15 @@ yfinance==0.2.36
 pandas==2.2.0
 numpy==1.26.3
 python-dotenv==1.0.1
-duckduckgo-search>=6.0.0
-groq==0.4.2
-openai==1.12.0
-google-genai==0.3.0
 requests==2.31.0
 lxml>=5.0.0
+
+# --- LIBRARY AI & SEARCH ---
+duckduckgo-search>=6.1.0
+google-genai>=0.4.0
+
+# --- UPDATE PENTING UNTUK MENGATASI ERROR ---
+groq>=0.9.0
+openai>=1.35.0
+httpx==0.27.0
+httpcore==1.0.5

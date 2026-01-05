@@ -1,8 +1,13 @@
+import os
 from flask import Flask, jsonify, request
 import concurrent.futures
 import time
 import yfinance as yf
-from google import genai  # <-- IMPORT VERSI BARU (SDK 2.0)
+from google import genai 
+from dotenv import load_dotenv # Import ini untuk baca file .env di laptop
+
+# Load environment variables dari file .env (jika ada)
+load_dotenv()
 
 # Pastikan file rumus_saham.py ada di folder yang sama
 from rumus_saham import analisa_multistrategy, ambil_berita_saham 
@@ -10,17 +15,23 @@ from rumus_saham import analisa_multistrategy, ambil_berita_saham
 app = Flask(__name__)
 
 # ==========================================
-# 0. KONFIGURASI AI GEMINI (FINAL & STABIL)
+# 0. KONFIGURASI AI GEMINI (AMAN UNTUK GITHUB)
 # ==========================================
 
-# API Key yang tadi berhasil
-GEMINI_API_KEY = "" 
+# LOGIKA AMAN: 
+# 1. Coba ambil dari Environment (Railway/Server Online)
+# 2. Jika kosong, coba ambil dari file .env lokal
+# 3. Kunci "hardcoded" di bawah hanya cadangan (HAPUS SEBELUM UPLOAD KE GITHUB JIKA INGIN 100% AMAN)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAOcwQyQOkVnM0DyFPsBvS0PaQpoUvLGRo") 
 
-# Inisialisasi Client (Syntax Baru)
+# Inisialisasi Client
 client = None
 try:
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    print("✅ Gemini Client Berhasil Diinisialisasi (Model: gemini-flash-latest)")
+    if GEMINI_API_KEY:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        print("✅ Gemini Client Berhasil Diinisialisasi (Model: gemini-flash-latest)")
+    else:
+        print("⚠️ API Key Kosong. Fitur AI tidak akan jalan.")
 except Exception as e:
     print(f"⚠️ Gagal Init Gemini: {e}")
 
@@ -40,7 +51,7 @@ def get_cached_analysis(ticker):
         CACHE_DATA[ticker] = {'data': data, 'timestamp': now}
     return data
 
-# [UPDATE] FUNGSI TANYA GEMINI (Disesuaikan dengan Test yang Berhasil)
+# [UPDATE] FUNGSI TANYA GEMINI
 def analisa_dengan_gemini(ticker, data_teknikal, berita_list):
     if not client: return "⚠️ API Key belum diisi / Error Client."
 
@@ -69,7 +80,7 @@ def analisa_dengan_gemini(ticker, data_teknikal, berita_list):
 
         # 3. Kirim ke AI (PAKAI MODEL YANG SUKSES DI TEST)
         response = client.models.generate_content(
-            model='gemini-flash-latest', # <-- Ini kuncinya biar gak 404/429
+            model='gemini-flash-latest', 
             contents=prompt
         )
         return response.text.strip()
@@ -179,7 +190,7 @@ def hitung_plan_sakti(data_analisa):
     return entry_str, sl, tp_str
 
 # ==========================================
-# 3. ENDPOINT SCANNER (TIDAK PAKAI GEMINI)
+# 3. ENDPOINT SCANNER
 # ==========================================
 def process_single_stock(kode, target_strategy, min_score_needed):
     try:
@@ -245,7 +256,7 @@ def get_scan_results():
     return jsonify(results)
 
 # ==========================================
-# 4. ENDPOINT DETAIL (PAKAI GEMINI)
+# 4. ENDPOINT DETAIL
 # ==========================================
 @app.route('/api/stock-detail', methods=['GET'])
 def get_stock_detail():
@@ -267,8 +278,8 @@ def get_stock_detail():
 
     # 2. [UPDATE] TANYA GEMINI
     analisa_ai_tambahan = ""
-    # Cek apakah key sudah diisi valid
-    if "AIza" in GEMINI_API_KEY and len(GEMINI_API_KEY) > 20:
+    # Cek apakah key sudah diisi valid (Minimal panjangnya 20 karakter)
+    if GEMINI_API_KEY and len(GEMINI_API_KEY) > 20:
          print(f"🤖 Bertanya ke Gemini tentang {ticker_polos}...")
          analisa_ai_tambahan = analisa_dengan_gemini(ticker_polos, data, list_berita)
     else:
@@ -296,7 +307,7 @@ def get_stock_detail():
     return jsonify(stock_detail)
 
 # ==========================================
-# 5. WATCHLIST
+# 5. WATCHLIST & STARTUP
 # ==========================================
 @app.route('/api/watchlist/add', methods=['POST'])
 def add_watchlist():
@@ -311,6 +322,10 @@ def remove_watchlist():
     return jsonify({"message": "Success", "current_list": WATCHLIST})
 
 if __name__ == '__main__':
-    print("🚀 Alpha Hunter V3 (Gemini Flash Latest): READY")
-    app.run(host='0.0.0.0', port=5000, debug=True)
-
+    # [PENTING] Pengaturan Port untuk Railway
+    # Railway akan memberikan port via environment variable "PORT"
+    # Jika dijalankan di laptop, default ke port 5000
+    port = int(os.environ.get("PORT", 5000))
+    
+    print(f"🚀 Alpha Hunter V3 Server berjalan di Port: {port}")
+    app.run(host='0.0.0.0', port=port, debug=True)

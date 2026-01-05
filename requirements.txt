@@ -1,4 +1,5 @@
 flask
 yfinance
-flask-cors
-gunicorn
+google-genai
+python-dotenv
+pandas

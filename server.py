@@ -4,9 +4,9 @@ import concurrent.futures
 import time
 import yfinance as yf
 from google import genai 
-from dotenv import load_dotenv # Import ini untuk baca file .env di laptop
+from dotenv import load_dotenv 
 
-# Load environment variables dari file .env (jika ada)
+# Load environment variables
 load_dotenv()
 
 # Pastikan file rumus_saham.py ada di folder yang sama
@@ -15,13 +15,10 @@ from rumus_saham import analisa_multistrategy, ambil_berita_saham
 app = Flask(__name__)
 
 # ==========================================
-# 0. KONFIGURASI AI GEMINI (AMAN UNTUK GITHUB)
+# 0. KONFIGURASI AI GEMINI (LOGIKA AMAN)
 # ==========================================
 
-# LOGIKA AMAN: 
-# 1. Coba ambil dari Environment (Railway/Server Online)
-# 2. Jika kosong, coba ambil dari file .env lokal
-# 3. Kunci "hardcoded" di bawah hanya cadangan (HAPUS SEBELUM UPLOAD KE GITHUB JIKA INGIN 100% AMAN)
+# Prioritas: Environment Variable (Railway) -> File .env (Laptop) -> Default Hardcoded
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAOcwQyQOkVnM0DyFPsBvS0PaQpoUvLGRo") 
 
 # Inisialisasi Client
@@ -51,34 +48,42 @@ def get_cached_analysis(ticker):
         CACHE_DATA[ticker] = {'data': data, 'timestamp': now}
     return data
 
-# [UPDATE] FUNGSI TANYA GEMINI
+# [UPDATE PENTING] PROMPT LEBIH CERDAS (MENJELASKAN "KENAPA")
 def analisa_dengan_gemini(ticker, data_teknikal, berita_list):
     if not client: return "⚠️ API Key belum diisi / Error Client."
 
     try:
         # 1. Siapkan Ringkasan Berita
         judul_berita = [b['title'] for b in berita_list[:3]] 
-        teks_berita = "\n- ".join(judul_berita) if judul_berita else "Tidak ada berita terbaru."
+        teks_berita = "\n- ".join(judul_berita) if judul_berita else "Tidak ada berita spesifik hari ini."
 
-        # 2. Buat Prompt
+        # 2. Buat Prompt YANG LEBIH TAJAM & ANALITIS
         prompt = f"""
-        Analisa Saham: {ticker} (IDX Indonesia).
+        Bertindaklah sebagai Pakar Analis Pasar Modal Indonesia (IDX) yang Kritis.
+        Analisa Saham: {ticker}.
         
-        Data Teknikal (Sistem Kami):
+        DATA SISTEM KAMI:
         - Harga: {data_teknikal['last_price']}
-        - Tren: {data_teknikal['verdict']} (Skor: {data_teknikal['score']})
-        - Alasan: {data_teknikal['reason']}
+        - Sinyal Teknikal: {data_teknikal['verdict']}
+        - Skor Kekuatan: {data_teknikal['score']}/100
+        - Faktor Teknikal: {data_teknikal['reason']}
         
-        Headlines Berita Terakhir:
-        - {teks_berita}
+        BERITA TERAKHIR:
+        {teks_berita}
         
-        Tugas:
-        Berikan komentar singkat (maksimal 2-3 kalimat) tentang sentimen berita terhadap teknikal ini.
-        Apakah berita mendukung sinyal Buy/Sell?
-        Jawab dengan gaya santai, singkat, dan awali dengan emoji 🤖.
+        TUGAS UTAMA (ANALISA CAUSALITY/SEBAB-AKIBAT):
+        Jelaskan *MENGAPA* saham ini bergerak {data_teknikal['verdict']}? 
+        Jangan hanya mengulang data di atas, tapi gunakan pengetahuanmu tentang sektor industri, makro ekonomi, atau psikologi pasar saat ini.
+        
+        Poin Analisa:
+        1. Apa pemicu utamanya? (Kinerja Keuangan? Harga Komoditas? Atau sekadar pantulan teknikal?)
+        2. Jika sinyal BUY: Apakah ini valid atau jebakan? 
+        3. Jika sinyal SELL/NEUTRAL: Apa risiko terbesarnya?
+        
+        Jawab dalam 1 paragraf yang padat, tajam, dan berwawasan luas. Awali dengan emoji 🧠.
         """
 
-        # 3. Kirim ke AI (PAKAI MODEL YANG SUKSES DI TEST)
+        # 3. Kirim ke AI
         response = client.models.generate_content(
             model='gemini-flash-latest', 
             contents=prompt
@@ -143,7 +148,7 @@ WATCHLIST = ["BBRI", "BBCA", "GOTO", "ANTM", "BREN", "TLKM"]
 @app.route('/')
 def home():
     kondisi = cek_kondisi_market()
-    return f"Server Alpha Hunter V3 (Gemini Flash Latest): READY | Market: {kondisi}"
+    return f"Server Alpha Hunter V3 (Gemini Smart Causality): READY | Market: {kondisi}"
 
 # ==========================================
 # 2. LOGIKA HITUNGAN PLAN
@@ -278,7 +283,6 @@ def get_stock_detail():
 
     # 2. [UPDATE] TANYA GEMINI
     analisa_ai_tambahan = ""
-    # Cek apakah key sudah diisi valid (Minimal panjangnya 20 karakter)
     if GEMINI_API_KEY and len(GEMINI_API_KEY) > 20:
          print(f"🤖 Bertanya ke Gemini tentang {ticker_polos}...")
          analisa_ai_tambahan = analisa_dengan_gemini(ticker_polos, data, list_berita)
@@ -322,10 +326,7 @@ def remove_watchlist():
     return jsonify({"message": "Success", "current_list": WATCHLIST})
 
 if __name__ == '__main__':
-    # [PENTING] Pengaturan Port untuk Railway
-    # Railway akan memberikan port via environment variable "PORT"
-    # Jika dijalankan di laptop, default ke port 5000
+    # Port untuk Railway
     port = int(os.environ.get("PORT", 5000))
-    
     print(f"🚀 Alpha Hunter V3 Server berjalan di Port: {port}")
     app.run(host='0.0.0.0', port=port, debug=True)

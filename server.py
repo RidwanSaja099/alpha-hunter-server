@@ -7,77 +7,103 @@ from flask import Flask, jsonify, request
 from dotenv import load_dotenv
 
 # --- IMPORT LIBRARY AI & SEARCH ---
-from duckduckgo_search import DDGS # [BARU] Search Engine Gratis Tanpa API Key
+# Kita bungkus dalam try-except agar server tidak crash jika library belum terinstall
+try:
+    from duckduckgo_search import DDGS 
+except ImportError:
+    DDGS = None
+    print("⚠️ Warning: duckduckgo_search tidak ditemukan. Fitur browsing dimatikan.")
+
 from groq import Groq 
 from openai import OpenAI 
-# Kita simpan Gemini sebagai cadangan saja
+
+# Gemini sebagai cadangan paling akhir
 try:
     from google import genai
-except:
+except ImportError:
     genai = None
 
 load_dotenv()
 
-# Pastikan file rumus_saham.py (V5 Sniper) ada di folder yang sama
+# Pastikan file rumus_saham.py ada di folder yang sama
 from rumus_saham import analisa_multistrategy, ambil_berita_saham 
 
 app = Flask(__name__)
 
 # ==========================================
-# 0. KONFIGURASI AI
+# 0. KONFIGURASI AI CLIENT
 # ==========================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
+# Init Clients
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY and genai else None
 
 # ==========================================
-# 1. AGEN 1: DUCKDUCKGO + GROQ (WARTAWAN GRATIS)
+# 1. AGEN PENCARI BERITA (HYBRID: DDG + YAHOO)
 # ==========================================
-def agen_pencari_berita_internet(ticker):
+def agen_pencari_berita_robust(ticker, berita_yahoo_backup):
     """
-    Menggunakan DuckDuckGo untuk browsing internet secara GRATIS (Tanpa Limit API).
-    Lalu hasil search dirangkum oleh Groq.
+    Mencari berita dengan strategi berlapis (Layered Strategy):
+    1. Coba DuckDuckGo (Internet Real-time).
+    2. Jika DDG Gagal/Kosong -> Pakai Data Yahoo Finance (Internal).
+    3. Rangkum hasilnya menggunakan Groq.
     """
-    print(f"🌍 Sedang browsing internet cari info: {ticker}...")
-    
-    # 1. CARI DATA MENTAH DARI INTERNET
-    search_results = []
-    try:
-        # Cari berita spesifik saham Indonesia terbaru
-        query = f"berita saham {ticker} indonesia terbaru hari ini corporate action kasus"
-        results = DDGS().text(query, max_results=5) # Ambil 5 berita teratas
-        
-        if results:
-            for r in results:
-                search_results.append(f"- {r['title']}: {r['body']} (Sumber: {r['href']})")
-        else:
-            return "Tidak ditemukan berita spesifik di internet."
+    laporan_mentah = ""
+    sumber_data = "YAHOO (BACKUP)" # Default status
+
+    # --- LAYER 1: COBA DUCKDUCKGO (INTERNET) ---
+    if DDGS:
+        try:
+            print(f"🌍 Mencoba DuckDuckGo untuk {ticker}...")
+            # Query spesifik untuk pasar Indonesia
+            query = f"berita saham {ticker} indonesia terbaru hari ini corporate action kinerja keuangan"
+            results = DDGS().text(query, max_results=4)
             
-    except Exception as e:
-        print(f"⚠️ DuckDuckGo Error: {e}")
-        return "Gagal browsing internet (Koneksi/Search Error)."
+            if results:
+                ddg_text = []
+                for r in results:
+                    ddg_text.append(f"- {r['title']}: {r['body']}")
+                
+                laporan_mentah = "\n".join(ddg_text)
+                sumber_data = "INTERNET (REAL-TIME)"
+            else:
+                print("⚠️ DuckDuckGo: Hasil Kosong / Tidak Relevan.")
+        except Exception as e:
+            print(f"⚠️ DuckDuckGo Error (Mungkin IP Cloud Diblokir): {e}")
 
-    # Gabungkan hasil pencarian jadi satu teks
-    raw_data = "\n".join(search_results)
+    # --- LAYER 2: JIKA DDG KOSONG, PAKAI YAHOO ---
+    # Ini memastikan AI Analis tidak pernah kekurangan data
+    if not laporan_mentah or len(laporan_mentah) < 50:
+        print("🔄 Mengalihkan ke Data Yahoo Finance...")
+        yahoo_text = []
+        if berita_yahoo_backup:
+            for b in berita_yahoo_backup:
+                judul = b.get('title', '')
+                yahoo_text.append(f"- {judul}")
+            laporan_mentah = "\n".join(yahoo_text)
+        else:
+            laporan_mentah = "Tidak ada berita spesifik yang ditemukan hari ini."
 
-    # 2. SURUH GROQ MERANGKUM HASIL PENCARIAN
+    # --- LAYER 3: RANGKUM DENGAN GROQ (Cleanup) ---
+    # Kita bersihkan data mentah agar DeepSeek enak bacanya
     if not client_groq:
-        return f"Hasil Browsing Mentah:\n{raw_data}"
+        return f"[{sumber_data}] {laporan_mentah}"
 
     prompt_wartawan = f"""
-    Kamu adalah Wartawan Pasar Modal.
-    Berikut adalah hasil pencarian internet mentah tentang saham {ticker}:
+    Kamu adalah Reporter Pasar Modal.
     
-    {raw_data}
+    SUMBER DATA MENTAH ({sumber_data}):
+    {laporan_mentah}
     
     TUGAS:
-    Buat ringkasan SINGKAT (maksimal 3 poin).
-    Fokus hanya pada: Sentimen Positif/Negatif, Corporate Action (Dividen/Merger), atau Masalah Hukum.
-    Jika beritanya tidak relevan atau basi, katakan "NIL".
+    1. Cari info tentang: Laba/Rugi, Dividen, Merger/Akuisisi, atau Kasus Hukum.
+    2. Abaikan berita iklan atau rekomendasi saham dari sekuritas lain.
+    3. Tulis rangkuman maksimal 3 poin penting.
+    4. Jika data kosong/tidak relevan, tulis "TIDAK ADA SENTIMEN BERITA SIGNIFIKAN".
     """
     
     try:
@@ -85,70 +111,78 @@ def agen_pencari_berita_internet(ticker):
             messages=[{"role": "user", "content": prompt_wartawan}],
             model="llama-3.3-70b-versatile",
         )
-        return chat.choices[0].message.content.strip()
+        return f"**SUMBER: {sumber_data}**\n" + chat.choices[0].message.content.strip()
     except:
-        return f"Groq Error. Data Mentah:\n{raw_data}"
+        return f"[{sumber_data} - Raw]\n{laporan_mentah}"
 
 # ==========================================
-# 2. AGEN 2: DEEPSEEK/GROQ (KEPALA ANALIS)
+# 2. AGEN KEPALA ANALIS (LOGIKA INVESTASI 6 POIN)
 # ==========================================
 def agen_analis_utama(data_context):
     """
-    Otak utama yang mengambil keputusan Buy/Sell dengan 6 POIN ANALISIS LENGKAP.
+    Otak utama: Menggabungkan Teknikal + Berita menjadi Keputusan.
+    Menggunakan DeepSeek (Utama) atau Groq (Cadangan).
     """
     prompt_analis = f"""
-    Kamu adalah Fund Manager Senior & Veteran Pasar Modal Indonesia.
+    Kamu adalah Fund Manager Senior (Institusi).
     
-    LAPORAN LENGKAP SAHAM:
+    DATA LENGKAP SAHAM:
     {data_context}
     
-    TUGAS ANALISIS MENDALAM (WAJIB JAWAB 6 POIN INI):
+    TUGASMU ADALAH MEMBERIKAN ANALISA MENDALAM (6 POIN WAJIB):
     
-    1. 🌍 **Sintesa Berita & Sentimen (CRUCIAL)**
-       (Gabungkan laporan berita internet di atas dengan pergerakan harga. Apakah beritanya mendukung kenaikan, atau justru 'Jebakan Bandar'? Adakah Corporate Action?)
+    1. 🌍 **Sintesa Berita & Sentimen**
+       (Gabungkan laporan berita di atas dengan teknikal. Apakah berita mendukung kenaikan? Hati-hati jebakan news.)
        
-    2. 🕵️‍♂️ **Analisa Dibalik Layar (Bandarmologi)**
-       (Lihat Volume & Smart Money Flow. Apakah sedang Akumulasi diam-diam atau Distribusi? Siapa yang menang hari ini, Buyer atau Seller?)
+    2. 🕵️‍♂️ **Bandarmologi (Flow Analysis)**
+       (Lihat Volume & Smart Money Flow. Apakah Bandar sedang Akumulasi, Distribusi, atau Mark-Up?)
        
-    3. 📊 **Cek Valuasi & Fundamental**
-       (Berdasarkan PER/PBV, apakah harga sekarang Masuk Akal? Apakah perusahaan sehat?)
+    3. 📊 **Valuasi & Fundamental**
+       (Cek PER/PBV. Apakah harga wajar atau overvalued? Apakah perusahaan profit?)
        
-    4. ⏱️ **Timing & Market Structure**
-       (Lihat posisi Candle & Trend 1 Tahun. Apakah ini 'Pisau Jatuh' atau 'Awal Uptrend'? Waktunya HAKA atau Antri Bawah?)
+    4. ⏱️ **Timing & Tren**
+       (Lihat posisi Candle & Trend. Apakah ini 'Pisau Jatuh' atau 'Breakout Valid'?)
 
-    5. 🎯 **Rekomendasi Gaya Trading & Plan Angka**
+    5. 🎯 **Rekomendasi Strategi**
        - Pilih SATU: (SCALPING / SWING / INVEST / BPJS / HINDARI).
-       - Tentukan Entry Price & Target Price versimu sendiri (Second Opinion).
+       - Tentukan Entry Price & Target Price versimu.
        
     6. ⚖️ **VERDICT FINAL**
-       (Kesimpulan Tegas: STRONG BUY / BUY / WAIT / SELL).
+       (Kesimpulan: STRONG BUY / BUY / WAIT / SELL).
     
-    Jawab dengan bahasa trader yang tajam, logis, dan tidak bertele-tele.
+    Jawab dengan bahasa trader profesional, tajam, dan objektif.
     """
 
-    # Opsi 1: Gunakan DeepSeek (Paling Pinter Mikir)
+    # Opsi 1: DeepSeek (Reasoning paling kuat)
     if client_deepseek:
         try:
-            print("🧠 DeepSeek sedang menganalisa keputusan final...")
             res = client_deepseek.chat.completions.create(
                 model="deepseek-chat", 
                 messages=[{"role": "user", "content": prompt_analis}]
             )
             return res.choices[0].message.content.strip()
-        except: pass
+        except Exception as e:
+            print(f"⚠️ DeepSeek Error: {e}")
 
-    # Opsi 2: Gunakan Groq (Backup Cepat)
+    # Opsi 2: Groq (Kecepatan tinggi)
     if client_groq:
         try:
-            print("⚡ Groq sedang menganalisa keputusan final...")
             chat = client_groq.chat.completions.create(
                 messages=[{"role": "user", "content": prompt_analis}],
                 model="llama-3.3-70b-versatile",
             )
             return chat.choices[0].message.content.strip()
         except: pass
-        
-    return "Maaf, AI Analis sedang gangguan."
+
+    # Opsi 3: Gemini (Cadangan terakhir)
+    if client_gemini:
+        try:
+            return client_gemini.models.generate_content(
+                model='gemini-1.5-flash', contents=prompt_analis
+            ).text.strip()
+        except: pass
+            
+    return "Maaf, semua AI Analis sedang sibuk/gangguan."
 
 # ==========================================
 # 3. DATABASE & CACHE
@@ -349,7 +383,7 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
     return entry_str, sl, tp_str
 
 # ==========================================
-# 5. ENDPOINT DETAIL (ESTAFET AI)
+# 5. ENDPOINT DETAIL (CORE LOGIC)
 # ==========================================
 @app.route('/api/stock-detail', methods=['GET'])
 def get_stock_detail():
@@ -372,10 +406,14 @@ def get_stock_detail():
     catatan_histori = hist_data.get('note', 'Valid')
     trend_1y = hist_data.get('trend_1y', 'N/A')
     
-    # 2. [LANGKAH 1] DUCKDUCKGO MENCARI BERITA DI INTERNET (GRATIS)
-    laporan_fakta_internet = agen_pencari_berita_internet(ticker_polos)
+    # 2. Ambil Berita Yahoo (Internal)
+    # Kita ambil ini dulu sebagai "Ban Serep" kalau DDG gagal
+    list_berita = ambil_berita_saham(ticker_lengkap)
+    
+    # 3. Jalankan Pencari Berita Hybrid (DDG + Yahoo)
+    laporan_fakta_lengkap = agen_pencari_berita_robust(ticker_polos, list_berita)
 
-    # 3. [LANGKAH 2] ANALISA OLEH DEEPSEEK/GROQ (6 POIN WAJIB)
+    # 4. Analisa Final oleh Kepala Analis (DeepSeek/Groq)
     data_context = f"""
     SAHAM: {ticker_polos}
     
@@ -384,8 +422,8 @@ def get_stock_detail():
     - Warning: {catatan_histori}
     {info_live}
     
-    [LAPORAN BERITA DARI INTERNET (DUCKDUCKGO)]
-    {laporan_fakta_internet}
+    [LAPORAN BERITA (FACT CHECK)]
+    {laporan_fakta_lengkap}
     """
     
     analisa_final = agen_analis_utama(data_context)
@@ -393,7 +431,7 @@ def get_stock_detail():
     rincian_teknikal = f"🔍 **SKOR {score} ({verdict})**\n"
     if catatan_histori != "Valid": rincian_teknikal += f"⚠️ {catatan_histori}\n"
 
-    reason_final = f"{rincian_teknikal}\n\n🌍 **BERITA INTERNET (DUCKDUCKGO):**\n{laporan_fakta_internet}\n\n====================\n🧠 **ANALISA FINAL:**\n{analisa_final}"
+    reason_final = f"{rincian_teknikal}\n\n📰 **BERITA TERKAIT:**\n{laporan_fakta_lengkap}\n\n====================\n🧠 **ANALISA FUND MANAGER:**\n{analisa_final}"
     
     pct = data.get('change_pct', 0)
     tanda = "+" if pct >= 0 else ""
@@ -409,7 +447,7 @@ def get_stock_detail():
             "type": data['type']
         },
         "plan": { "entry": entry, "stop_loss": sl, "take_profit": tp },
-        "news": [], # Kosongkan saja karena sudah ada di analisis
+        "news": list_berita, 
         "is_watchlist": ticker_polos in WATCHLIST
     }
     return jsonify(stock_detail)
@@ -483,6 +521,19 @@ def remove_watchlist():
     ticker = request.args.get('ticker')
     if ticker and ticker in WATCHLIST: WATCHLIST.remove(ticker)
     return jsonify({"message": "Success", "current_list": WATCHLIST})
+
+# HALAMAN DEPAN SEDERHANA UNTUK CEK STATUS
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({
+        "status": "Server Alpha Hunter V3 ONLINE 🚀",
+        "features": {
+            "search": "Hybrid (DuckDuckGo + Yahoo)",
+            "analysis": "DeepSeek / Groq (6 Points)",
+            "scanner": "V5 Sniper"
+        },
+        "message": "Gunakan endpoint /api/stock-detail?ticker=BBRI"
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 7860))

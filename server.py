@@ -2,23 +2,27 @@ import os
 import time
 import concurrent.futures
 import yfinance as yf
-import numpy as np
+import math
 from flask import Flask, jsonify, request
 from dotenv import load_dotenv
 
 # --- IMPORT LIBRARY AI ---
 from google import genai
+from google.genai import types # Penting untuk Google Search
 from groq import Groq 
 from openai import OpenAI 
 
+# Load environment variables
 load_dotenv()
+
 from rumus_saham import analisa_multistrategy, ambil_berita_saham 
 
 app = Flask(__name__)
 
 # ==========================================
-# 0. KONFIGURASI MULTI-AI
+# 0. KONFIGURASI MULTI-AI (SISTEM HYBRID)
 # ==========================================
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -27,30 +31,53 @@ client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
 
-def dapatkan_analisa_ai_cerdas(prompt):
-    """Sistem Cerdas: Mencoba Gemini -> Gagal? -> Coba Groq -> Gagal? -> Coba DeepSeek"""
+def dapatkan_analisa_ai_cerdas(prompt_online, prompt_offline):
+    """
+    Sistem Hybrid:
+    1. Gemini: Diberi prompt untuk BROWSING INTERNET (Cek berita real-time).
+    2. Groq/DeepSeek: Diberi prompt untuk LOGIKA (Cek data angka).
+    """
+    
+    # 1. COBA GEMINI (MODE ONLINE / SEARCH)
     if client_gemini:
         try:
-            print("🤖 Menggunakan Gemini AI...")
-            response = client_gemini.models.generate_content(model='gemini-flash-latest', contents=prompt)
+            print("🤖 Menggunakan Gemini AI (Mode: SEARCHING ONLINE)...")
+            response = client_gemini.models.generate_content(
+                model='gemini-1.5-flash',
+                contents=prompt_online, # <-- Prompt khusus browsing
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(
+                        google_search_retrieval=types.GoogleSearchRetrieval
+                    )]
+                )
+            )
             return response.text.strip()
-        except Exception as e: print(f"⚠️ Gemini Limit: {e}")
+        except Exception as e: 
+            print(f"⚠️ Gemini Error: {e}")
 
+    # 2. COBA GROQ (MODE OFFLINE / ANALISA DATA)
     if client_groq:
         try:
-            print("⚡ Beralih ke Groq...")
-            chat = client_groq.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.3-70b-versatile")
+            print("⚡ Gemini sibuk, beralih ke Groq (Mode: ANALISA LOGIS)...")
+            chat = client_groq.chat.completions.create(
+                messages=[{"role": "user", "content": prompt_offline}], # <-- Prompt khusus data
+                model="llama-3.3-70b-versatile",
+            )
             return chat.choices[0].message.content.strip()
         except Exception as e: print(f"⚠️ Groq Error: {e}")
 
+    # 3. COBA DEEPSEEK (MODE OFFLINE / DEEP REASONING)
     if client_deepseek:
         try:
-            print("🧠 Beralih ke DeepSeek...")
-            res = client_deepseek.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}])
+            print("🧠 Beralih ke DeepSeek (Mode: DEEP REASONING)...")
+            res = client_deepseek.chat.completions.create(
+                model="deepseek-chat", 
+                messages=[{"role": "user", "content": prompt_offline}] # <-- Prompt khusus data
+            )
             return res.choices[0].message.content.strip()
         except: pass
 
-    return "🤖 Maaf, semua otak AI sedang istirahat. Gunakan data teknikal di atas."
+    return "🤖 Maaf, semua otak AI sedang istirahat. Gunakan data teknikal di atas sebagai panduan."
 
 # ==========================================
 # 1. DATABASE & CACHE
@@ -59,15 +86,14 @@ CACHE_DATA = {}
 CACHE_TIMEOUT = 300 
 MARKET_STATUS = {"condition": "NORMAL", "last_check": 0}
 
-DATABASE_SYARIAH = [# --- BLUE CHIP SYARIAH (JII 30) ---
+# List Saham Syariah Lengkap (Sudah diupdate)
+DATABASE_SYARIAH = [
     "ADRO", "AKRA", "ANTM", "ASII", "BRIS", "BRPT", "BUKA", "CPIN", 
     "EMTK", "EXCL", "GOTO", "HRUM", "ICBP", "INCO", "INDF", "INKP", 
     "INTP", "ISAT", "ITMG", "JPFA", "KLBF", "MDKA", "MEDC", "PGAS", 
     "PTBA", "SCMA", "SIDO", "SMGR", "TPIA", "UNTR", "UNVR",
-
-    # --- MID CAP & POTENSIAL (JII 70 & ISSI LIKUID) ---
     "ACES", "ADHI", "ADMR", "AGII", "AMMN", "AMRT", "ASSA", "AUTO", 
-    "AVIA", "BIRD", "BISi", "BLESS", "BMTR", "BTPS", "BUMI", "BYAN", 
+    "AVIA", "BIRD", "BISI", "BLESS", "BMTR", "BTPS", "BUMI", "BYAN", 
     "CINT", "CLEO", "CMRY", "CTRA", "DEWAN", "DOID", "DRMA", "ELSA", 
     "ENRG", "ERAA", "ESSA", "FREN", "HEAL", "HOKI", "HMSP", "INDY", 
     "INRA", "JSMR", "KAEF", "KRYA", "LSIP", "MAPI", "MAPA", "MBMA", 
@@ -75,68 +101,48 @@ DATABASE_SYARIAH = [# --- BLUE CHIP SYARIAH (JII 30) ---
     "PANI", "PGEO", "PNBN", "PNLF", "PTPP", "PWON", "RAJA", "RALS", 
     "RMKE", "ROTI", "SAME", "SCCO", "SILO", "SIMP", "SMDR", "SMRA", 
     "SMSM", "SRTG", "SSIA", "STAA", "TAPG", "TBIG", "TINS", "TKIM", 
-    "TLKM", "TOWR", "TRIN", "TSPC", "ULTJ", "WIKA", "WIIM", "WOOD",
-    
-    # --- SAHAM SYARIAH LAPIS 3 (Gorengan/High Volatility) ---
-    "ABMM", "APEX", "ARTO", "BULL", "CARS", "CARE", "CUAN", "DEWA",
-    "FIRE", "GCOAL", "GTBO", "IATA", "IMAS", "INDX", "IPPE", "ITMA",
-    "KREN", "LEAD", "MMLP", "MYRX", "NELY", "OASA", "OILX", "PCAR",
-    "PMMP", "PSAB", "PTRO", "TOBA", "TRIS", "WIFI", "ZINC"]
+    "TLKM", "TOWR", "TRIN", "TSPC", "ULTJ", "WIKA", "WIIM", "WOOD"
+]
 MARKET_UNIVERSE = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "UNTR", "ICBP", "INDF", "GOTO", "MDKA", "ANTM", "INCO", "PGAS", "ADRO", "PTBA", "BRPT", "BREN", "AMMN"]
 WATCHLIST = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "GOTO", "ANTM", "ADRO", "UNTR"]
 
-# ==========================================
-# [BARU] FUNGSI VALIDASI HISTORIS (ANTI-AMPAS)
-# ==========================================
+# FUNGSI VALIDASI HISTORI (ANTI-AMPAS)
 def validasi_histori_panjang(ticker_lengkap, data_short):
-    """
-    Melihat data 1-2 tahun ke belakang untuk memastikan ini bukan saham gorengan sesaat.
-    Mengembalikan: (Skor Terkoreksi, Data Histori Penting)
-    """
+    """Filter saham ampas dengan melihat data 1 tahun ke belakang"""
     try:
-        # Tarik data 1 tahun (1y)
         hist = yf.Ticker(ticker_lengkap).history(period="1y")
-        
-        if hist.empty:
-            return 0, {} # Data kosong, anggap saham tidak valid
+        if hist.empty: return 0, {} 
 
         current_price = data_short['last_price']
         max_1y = hist['High'].max()
         min_1y = hist['Low'].min()
         avg_vol = hist['Volume'].mean()
-        
-        # Harga 1 tahun lalu (untuk cek trend jangka panjang)
         price_1y_ago = hist['Close'].iloc[0]
 
-        # --- LOGIKA PENALTI SKOR ---
         penalty = 0
         alasan_penalti = []
 
-        # 1. Cek Trend Tahunan
+        # 1. Downtrend Tahunan
         if current_price < price_1y_ago:
             penalty += 20
             alasan_penalti.append("Downtrend Jangka Panjang (1Y)")
-        
-        # 2. Cek Saham Gocap/Murahan
+        # 2. Saham Gocap
         if current_price < 60:
             penalty += 30
             alasan_penalti.append("Saham Gocap/Resiko Tinggi")
-            
-        # 3. Cek Likuiditas (Saham Kuburan)
-        if avg_vol < 50000: # Volume rata-rata kecil
+        # 3. Saham Kuburan (Sepi)
+        if avg_vol < 50000:
             penalty += 25
             alasan_penalti.append("Likuiditas Rendah (Sepi)")
-
-        # 4. Posisi Harga (Apakah di Pucuk?)
-        # Jika harga > 90% dari Max 1 Tahun, hati-hati resisten kuat
+        # 4. Harga di Pucuk
         range_1y = max_1y - min_1y
         posisi_thd_max = (current_price - min_1y) / range_1y if range_1y > 0 else 0
         if posisi_thd_max > 0.95:
             penalty += 10
-            alasan_penalti.append("Harga di Pucuk Tahunan (Resisten Kuat)")
+            alasan_penalti.append("Harga di Pucuk Tahunan")
 
         final_score = max(0, data_short['score'] - penalty)
-
+        
         hist_data = {
             "max_1y": max_1y,
             "min_1y": min_1y,
@@ -144,32 +150,22 @@ def validasi_histori_panjang(ticker_lengkap, data_short):
             "avg_volume": avg_vol,
             "note": ", ".join(alasan_penalti) if alasan_penalti else "Valid"
         }
-        
         return final_score, hist_data
-
-    except Exception as e:
-        print(f"Error Validasi Histori: {e}")
-        return data_short['score'], {} # Jika gagal tarik data, pakai skor asli
+    except: return data_short['score'], {}
 
 def get_cached_analysis(ticker):
     now = time.time()
-    # Cek cache
     if ticker in CACHE_DATA:
         item = CACHE_DATA[ticker]
         if now - item['timestamp'] < CACHE_TIMEOUT:
             return item['data']
     
-    # 1. Analisa Teknikal Dasar (Rumus Lama)
     data = analisa_multistrategy(ticker)
-    
-    # 2. [BARU] Validasi Histori Panjang (Filter Anti-Ampas)
     if data['last_price'] > 0:
         new_score, hist_data = validasi_histori_panjang(ticker, data)
-        data['score'] = int(new_score) # Update skor dengan yang sudah dikoreksi
-        data['hist_data'] = hist_data # Simpan data histori untuk dipakai di Plan
-        
+        data['score'] = int(new_score)
+        data['hist_data'] = hist_data
         CACHE_DATA[ticker] = {'data': data, 'timestamp': now}
-        
     return data
 
 def ambil_data_live_lengkap(ticker_lengkap):
@@ -184,9 +180,7 @@ def ambil_data_live_lengkap(ticker_lengkap):
         day_low = info.get('dayLow', 0)
         curr_price = info.get('currentPrice', day_open)
         volume = info.get('volume', 0)
-        
         candle_stat = "🟢 BULLISH" if curr_price > day_open else "🔴 BEARISH"
-        
         return f"""
         - Sektor: {sector} | PER: {per:.2f}x | PBV: {pbv:.2f}x
         - LIVE: Open {day_open} | High {day_high} | Low {day_low} | Last {curr_price}
@@ -207,9 +201,10 @@ def cek_kondisi_market():
     return MARKET_STATUS['condition']
 
 # ==========================================
-# 2. LOGIKA PLAN SAKTI (DENGAN DATA HISTORIS)
+# 2. LOGIKA PLAN SAKTI (ILMIAH, TICK RULE, PSIKOLOGIS)
 # ==========================================
 
+# A. ATURAN FRAKSI HARGA (TICK RULE) BEI
 def get_tick_size(harga):
     if harga < 200: return 1
     elif harga < 500: return 2
@@ -217,55 +212,58 @@ def get_tick_size(harga):
     elif harga < 5000: return 10
     else: return 25
 
+# B. FUNGSI PEMBULATAN KE TICK TERDEKAT
 def bulatkan_ke_tick(harga):
     if harga <= 0: return 0
     tick = get_tick_size(harga)
     return int(round(harga / tick) * tick)
 
+# C. FUNGSI TARGET PSIKOLOGIS (DINAMIS)
 def get_psychological_step(harga):
-    if harga < 200: return 10
-    elif harga < 1000: return 50
-    elif harga < 5000: return 100
-    else: return 250
+    if harga < 200: return 10      # Kelipatan 10 (misal 210, 220)
+    elif harga < 1000: return 50   # Kelipatan 50 (misal 550, 600)
+    elif harga < 5000: return 100  # Kelipatan 100 (misal 2100, 2200)
+    else: return 250               # Kelipatan 250 (misal 5250, 5500)
 
 def format_angka(nilai):
     return "{:,}".format(int(nilai)).replace(",", ".")
 
 def hitung_plan_sakti(data_analisa, ticker_fibo=None):
     harga_sekarang = data_analisa.get('last_price', 0)
-    # [BARU] Ambil support dari data histori 1 tahun jika ada (lebih kuat)
     hist_data = data_analisa.get('hist_data', {})
-    min_1y = hist_data.get('min_1y', 0)
     
-    # Default support dari jangka pendek
+    # Ambil support dari data histori 1 tahun (lebih valid)
+    # Jika tidak ada, pakai support jangka pendek
     support_short = data_analisa.get('support', 0)
     if support_short == 0: support_short = int(harga_sekarang * 0.96)
 
     tipe_trading = data_analisa.get('type', 'UNKNOWN')
     if harga_sekarang <= 0: return "-", 0, "-"
-
-    # --- 1. PENENTUAN ENTRY (HISTORICAL WEIGHTED) ---
-    # Kita bandingkan Support Pendek vs Support Tahunan
-    # Jika Support Pendek terlalu jauh di atas Support Tahunan, hati-hati (rawan jatuh dalam)
     
-    # Gunakan support pendek untuk entry harian, tapi validasi dengan histori
+    # 1. PENENTUAN ENTRY (FRONT RUNNING)
+    # Jangan antri pas di support, naikkan 2-3 tick biar dapet barang
     base_support = support_short
-    
     tick_size = get_tick_size(base_support)
+    
     buy_low = bulatkan_ke_tick(base_support + (2 * tick_size))
     buy_high = bulatkan_ke_tick(buy_low + (3 * tick_size))
     
     status_entry = ""
-    if harga_sekarang > (buy_high * 1.03): status_entry = "\n⚠️ Harga Lari (Wait Pullback)"
-    elif harga_sekarang < buy_low: buy_low = harga_sekarang
+    # Cek apakah harga sudah "Lari"
+    if harga_sekarang > (buy_high * 1.03): 
+        status_entry = "\n⚠️ Harga Lari (Wait Pullback)"
+    # Cek apakah harga lagi "Diskon"
+    elif harga_sekarang < buy_low: 
+        buy_low = harga_sekarang
 
     entry_str = f"{format_angka(buy_low)} - {format_angka(buy_high)}{status_entry}"
 
-    # --- 2. STOP LOSS (SAFETY FIRST) ---
-    sl_raw = base_support - (5 * get_tick_size(base_support))
+    # 2. PENENTUAN STOP LOSS (SAFE ZONE)
+    # SL ditaruh DI BAWAH Support, jarak 6 Tick (Aman dari False Break)
+    sl_raw = base_support - (6 * get_tick_size(base_support))
     sl = bulatkan_ke_tick(sl_raw)
 
-    # --- 3. TARGET PROFIT (HISTORICAL RESISTANCE) ---
+    # 3. PENENTUAN TARGET PROFIT (HISTORICAL & FIBONACCI)
     if tipe_trading == "ARA": 
         tp_str = "HOLD SAMPAI ARA 🚀"
         sl = bulatkan_ke_tick(harga_sekarang * 0.92)
@@ -273,19 +271,19 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
         tp_str = "HOLD JANGKA PANJANG"
         sl = bulatkan_ke_tick(harga_sekarang * 0.85)
     else:
-        # TP1: Conservative (3-4%)
+        # TP1: Conservative Profit (3-4% untuk amankan modal)
         tp1 = bulatkan_ke_tick(buy_low * 1.04)
         
-        # TP2: Cek Resisten Historis (High 1 Tahun)
+        # TP2: Mencari Resisten Historis Terkuat
         max_1y = hist_data.get('max_1y', 0)
+        
+        # Jika High 1 tahun masuk akal (tidak kejauhan > 50%), jadikan TP2
         if max_1y > buy_low and max_1y < (buy_low * 1.5):
-            # Jika High 1 tahun masuk akal (tidak kejauhan), jadikan TP2/TP3
             tp2_raw = max_1y
         else:
-            # Jika ATH kejauhan, pakai Fibo/Persentase
-            tp2_raw = buy_low * 1.08
+            tp2_raw = buy_low * 1.08 # Default 8%
 
-        # Coba Tarik Fibo Short Term (1 Bulan)
+        # Cross-check dengan Fibonacci (Jika mode detail)
         if ticker_fibo:
             try:
                 hist = yf.Ticker(ticker_fibo).history(period="1mo")
@@ -293,27 +291,32 @@ def hitung_plan_sakti(data_analisa, ticker_fibo=None):
                     swing_high = hist['High'].max()
                     swing_low = hist['Low'].min()
                     swing_range = swing_high - swing_low
-                    tp_fibo = swing_low + (swing_range * 1.618)
-                    # Pilih mana yang lebih realistis antara Fibo dan Resisten Tahunan
-                    if tp_fibo < tp2_raw: tp2_raw = tp_fibo
+                    tp_fibo = swing_low + (swing_range * 1.618) # Golden Ratio
+                    
+                    # Ambil yang lebih konservatif antara Fibo dan Resisten Tahunan
+                    if tp_fibo < tp2_raw and tp_fibo > buy_low:
+                        tp2_raw = tp_fibo
             except: pass
         
         tp2 = bulatkan_ke_tick(tp2_raw)
 
-        # TP3: Psikologis
+        # TP3: Target Psikologis (Angka Bulat)
         step = get_psychological_step(tp2)
+        # Pembulatan ke atas (Ceiling) ke kelipatan terdekat
         tp3_raw = (int(tp2 / step) + 1) * step
+        # Pastikan TP3 lebih tinggi dari TP2
         if tp3_raw <= tp2: tp3_raw += step
+        
         tp3 = bulatkan_ke_tick(tp3_raw)
 
         tp_str = (f"🎯 TP1: {format_angka(tp1)} (Aman)\n"
-                  f"🚀 TP2: {format_angka(tp2)} (Resist/Fibo)\n"
+                  f"🚀 TP2: {format_angka(tp2)} (Fibo/Resist)\n"
                   f"💎 TP3: {format_angka(tp3)} (Psikologis)")
 
     return entry_str, sl, tp_str
 
 # ==========================================
-# 3. ENDPOINT DETAIL
+# 3. ENDPOINT DETAIL (DUA JENIS PROMPT)
 # ==========================================
 @app.route('/api/stock-detail', methods=['GET'])
 def get_stock_detail():
@@ -321,63 +324,72 @@ def get_stock_detail():
     if not ticker_polos: return jsonify({"error": "No Ticker"}), 400
     
     ticker_lengkap = ticker_polos + ".JK"
-    data = get_cached_analysis(ticker_lengkap) # Ini sudah lewat Validasi Histori
+    data = get_cached_analysis(ticker_lengkap)
     
     if data['last_price'] == 0:
         return jsonify({"error": "Not Found", "analysis": {"score":0, "verdict":"ERR", "reason":"-", "type":"-"}})
     
+    # Ambil Data
     info_live = ambil_data_live_lengkap(ticker_lengkap)
     hist_data = data.get('hist_data', {})
-    
-    # Hitung Plan
     entry, sl, tp = hitung_plan_sakti(data, ticker_fibo=ticker_lengkap)
 
     score = data['score']
     verdict = data['verdict']
-    
-    # Ambil catatan histori (Alasan kenapa skor dikurangi)
     catatan_histori = hist_data.get('note', 'Valid')
     trend_1y = hist_data.get('trend_1y', 'N/A')
     
-    # Persiapan AI
     list_berita = ambil_berita_saham(ticker_lengkap)
     judul_berita = [b['title'] for b in list_berita[:3]] 
-    teks_berita = "\n- ".join(judul_berita) if judul_berita else "-"
+    teks_berita = "\n- ".join(judul_berita) if judul_berita else "Tidak ada berita spesifik."
 
-    # Prompt AI dengan Data Histori
-    prompt = f"""
-    Kamu adalah Veteran Pasar Modal. Analisa saham: {ticker_polos}.
-    
-    DATA HISTORIS & TEKNIKAL:
-    - Skor Saat Ini: {score}/100
-    - Trend 1 Tahun: {trend_1y}
-    - Catatan Validasi: {catatan_histori} (Jika ada 'Downtrend' atau 'Sepi', hati-hati).
+    # --- PERSIAPAN KONTEKS DATA ---
+    data_context = f"""
+    SAHAM: {ticker_polos}
+    DATA SISTEM:
+    - Skor: {score}/100 | Trend 1Y: {trend_1y}
+    - Warning: {catatan_histori}
     {info_live}
-    - BERITA: {teks_berita}
+    - Headlines: {teks_berita}
+    """
+
+    # --- PROMPT A: KHUSUS GEMINI (DISURUH BROWSING) ---
+    prompt_online = f"""
+    Kamu adalah Veteran Pasar Modal.
+    {data_context}
     
-    TUGAS WAJIB (Jawab 6 Poin):
+    TUGAS UTAMA (CEK FAKTA ONLINE):
+    1. 🌍 **BROWSING MANDIRI**: Cari berita terkini di Google tentang {ticker_polos} (Breaking news, Laporan Keuangan, Isu Korupsi) yang mungkin belum ada di data Yahoo di atas.
+    2. 🕵️‍♂️ **Analisa Bandar**: Gabungkan hasil browsingmu dengan data live di atas.
+    3. 🎯 **Rekomendasi Gaya Trading**: (BPJS/SWING/INVEST) dan berikan angka Entry/TP versimu.
+    4. ⚖️ **VERDICT**: LAYAK BELI / TIDAK?
     
-    1. 🕵️‍♂️ **Analisa Dibalik Layar** (Siapa yang bermain? Bandar/Retail? Candle hari ini menipu tidak?)
-    2. 📜 **Cek Track Record (Cross-Check)**
-       (Melihat data trend 1 tahun diatas ({trend_1y}), apakah kenaikan ini cuma 'Dead Cat Bounce' atau pembalikan arah beneran? Jelaskan).
-    3. 📊 **Valuasi** (Murah/Mahal?)
-    4. ⏱️ **Timing Masuk** (Haka/Antri?)
-    5. 🎯 **GAYA TRADING** (BPJS/BSJP/SCALPING/SWING/INVEST)
-    6. 🔢 **PLAN AI (SECOND OPINION)** (Entry & TP versimu)
-    7. ⚖️ **VERDICT** (LAYAK BELI / TIDAK)
+    Jawab singkat, tajam, dan sebutkan jika ada berita bahaya dari hasil browsingmu.
+    """
+
+    # --- PROMPT B: KHUSUS GROQ & DEEPSEEK (ANALISA LOGIKA) ---
+    prompt_offline = f"""
+    Kamu adalah Quant Analyst (Ahli Matematika Saham).
+    {data_context}
     
-    Jawab tegas. Jika data historis jelek (Downtrend), jangan ragu bilang "JANGAN MASUK" meskipun indikator jangka pendek hijau.
+    KARENA KAMU TIDAK BISA BROWSING, FOKUS BEDAH DATA DI ATAS:
+    1. 📊 **Bedah Data Live**: Lihat Open, High, Low, Last. Apakah candle hari ini Bullish kuat atau jebakan?
+    2. 📜 **Validasi Trend**: Sistem bilang trend 1 tahun {trend_1y} dengan skor {score}. Apakah valid?
+    3. 🎯 **Rekomendasi**: Pilih gaya trading (BPJS/SWING/INVEST) yang paling masuk akal secara matematis.
+    4. 🔢 **PLAN AI**: Hitung Entry & TP versimu berdasarkan volatilitas hari ini.
+    
+    Jawab dengan logika yang kuat.
     """
     
-    analisa_ai_cerdas = dapatkan_analisa_ai_cerdas(prompt)
+    # Kirim DUA Prompt
+    analisa_ai_cerdas = dapatkan_analisa_ai_cerdas(prompt_online, prompt_offline)
     
+    # Formatting
     rincian_teknikal = f"🔍 **TEKNIKAL SKOR {score}:**\n"
-    if catatan_histori != "Valid":
-        rincian_teknikal += f"⚠️ **PERINGATAN:** {catatan_histori}\n"
-        
-    if score >= 80: rincian_teknikal += "✅ Strong Uptrend\n✅ Volume Tinggi"
+    if catatan_histori != "Valid": rincian_teknikal += f"⚠️ **PERINGATAN:** {catatan_histori}\n"
+    if score >= 80: rincian_teknikal += "✅ Strong Uptrend"
     elif score >= 60: rincian_teknikal += "✅ Potensi Reversal"
-    else: rincian_teknikal += "⚠️ Hati-hati (High Risk)"
+    else: rincian_teknikal += "⚠️ High Risk"
 
     reason_final = f"{rincian_teknikal}\n\n====================\n{analisa_ai_cerdas}"
     pct = data.get('change_pct', 0)
@@ -400,23 +412,22 @@ def get_stock_detail():
     return jsonify(stock_detail)
 
 # ==========================================
-# 4. ENDPOINT SCANNER (DENGAN FILTER BARU)
+# 4. ENDPOINT SCANNER (TETAP SAMA)
 # ==========================================
 def process_single_stock(kode, target_strategy, min_score_needed):
     try:
         ticker = kode + ".JK"
-        # get_cached_analysis sekarang sudah otomatis memanggil validasi_histori_panjang
-        data = get_cached_analysis(ticker) 
+        data = get_cached_analysis(ticker) # Panggil validasi histori
         
         if data['last_price'] == 0: return None
-        # Skor otomatis turun jika histori jelek, jadi saham ampas otomatis terfilter disini
-        if data['score'] < min_score_needed: return None 
+        if data['score'] < min_score_needed: return None # Filter ampas disini
 
         tipe_ditemukan = data['type']
         if target_strategy == 'SYARIAH': pass 
         elif target_strategy not in ['ALL', 'WATCHLIST']:
             if target_strategy not in tipe_ditemukan: return None
 
+        # Scanner pakai rumus cepat (tanpa fibo history)
         entry, sl, tp = hitung_plan_sakti(data, ticker_fibo=None)
         
         pct = data.get('change_pct', 0)
@@ -453,13 +464,11 @@ def get_scan_results():
 
     results = []
     limit_scan = daftar_scan[:60] 
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(process_single_stock, kode, target_strategy, MIN_SCORE): kode for kode in limit_scan}
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             if res: results.append(res)
-    
     results.sort(key=lambda x: x['analysis']['score'], reverse=True)
     return jsonify(results)
 

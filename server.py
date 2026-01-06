@@ -2,17 +2,18 @@ import os
 import time
 import concurrent.futures
 import yfinance as yf
+import pandas as pd
+import numpy as np
 import math
 from flask import Flask, jsonify, request
 from dotenv import load_dotenv
 
 # --- IMPORT LIBRARY AI & SEARCH ---
-# Dibungkus try-except agar server 'Tahan Banting' kalau library belum update
 try:
     from duckduckgo_search import DDGS 
 except ImportError:
     DDGS = None
-    print("⚠️ Warning: duckduckgo_search belum terinstall. Fitur browsing internet mati.")
+    print("⚠️ Warning: duckduckgo_search tidak ditemukan.")
 
 from groq import Groq 
 from openai import OpenAI 
@@ -24,7 +25,7 @@ except ImportError:
 
 load_dotenv()
 
-# Pastikan file rumus_saham.py ada di folder yang sama (V5 Sniper)
+# Pastikan file rumus_saham.py ada di folder yang sama
 from rumus_saham import analisa_multistrategy, ambil_berita_saham 
 
 app = Flask(__name__)
@@ -41,196 +42,189 @@ client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepsee
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY and genai else None
 
 # ==========================================
-# 1. FITUR BARU: SECTOR & COMMODITY INTELLIGENCE
+# 1. FITUR BARU: MESIN 7 INDIKATOR TEKNIKAL (MANUAL CALCULATOR)
+# ==========================================
+def hitung_indikator_lengkap(ticker_lengkap):
+    """
+    [FITUR TAMBAHAN V8]
+    Menghitung 7+ Indikator Teknikal secara manual menggunakan Pandas & Numpy.
+    Data ini akan disuapkan ke AI agar analisanya sangat akurat & sepaham dengan Scanner.
+    """
+    try:
+        # Ambil data historis cukup panjang untuk MA200
+        df = yf.Ticker(ticker_lengkap).history(period="1y")
+        if len(df) < 50: return "Data Historis Tidak Cukup untuk Analisa Teknikal Lengkap."
+
+        # --- 1. RSI (14) ---
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs)).iloc[-1]
+
+        # --- 2. MOVING AVERAGES (MA5, MA20, MA200) ---
+        close = df['Close'].iloc[-1]
+        ma5 = df['Close'].rolling(window=5).mean().iloc[-1]
+        ma20 = df['Close'].rolling(window=20).mean().iloc[-1]
+        ma200 = df['Close'].rolling(window=200).mean().iloc[-1] if len(df) > 200 else ma20
+
+        # --- 3. BOLLINGER BANDS ---
+        std = df['Close'].rolling(window=20).std().iloc[-1]
+        upper_bb = ma20 + (2 * std)
+        lower_bb = ma20 - (2 * std)
+        bb_pos = (close - lower_bb) / (upper_bb - lower_bb) # 0=Bawah, 1=Atas
+
+        # --- 4. MACD (12, 26, 9) ---
+        exp12 = df['Close'].ewm(span=12, adjust=False).mean()
+        exp26 = df['Close'].ewm(span=26, adjust=False).mean()
+        macd_line = exp12.iloc[-1] - exp26.iloc[-1]
+        signal_line = (exp12 - exp26).ewm(span=9, adjust=False).mean().iloc[-1]
+        macd_hist = macd_line - signal_line
+
+        # --- 5. STOCHASTIC OSCILLATOR ---
+        low14 = df['Low'].rolling(window=14).min().iloc[-1]
+        high14 = df['High'].rolling(window=14).max().iloc[-1]
+        stoch_k = 100 * ((close - low14) / (high14 - low14))
+
+        # --- 6. VOLUME ANALYSIS ---
+        vol_now = df['Volume'].iloc[-1]
+        vol_avg = df['Volume'].rolling(window=20).mean().iloc[-1]
+        vol_ratio = vol_now / vol_avg if vol_avg > 0 else 0
+
+        # --- 7. TREN FILTER ---
+        trend_long = "BULLISH (Di atas MA200)" if close > ma200 else "BEARISH (Di bawah MA200)"
+        trend_short = "UP" if ma5 > ma20 else "DOWN"
+
+        return f"""
+        [DATA TEKNIKAL LENGKAP - 7 INDIKATOR]
+        1. RSI (14): {rsi:.2f} (Catatan: >70 Strong Trend, <30 Oversold)
+        2. MACD Momentum: {'POSITIF' if macd_hist > 0 else 'NEGATIF'} (Hist: {macd_hist:.2f})
+        3. Bollinger Bands: Posisi {bb_pos:.2f} (Mendekati 1.0=Upper Band/Rawan Koreksi)
+        4. Stochastic %K: {stoch_k:.2f} (Momentum Swing)
+        5. Volume Flow: {vol_ratio:.2f}x Rata-rata (Jika >1.2x = Akumulasi Kuat)
+        6. Tren Jangka Pendek (MA5 vs MA20): {trend_short}
+        7. Tren Jangka Panjang (MA200): {trend_long} | Harga: {close:.0f} vs MA200: {ma200:.0f}
+        """
+    except Exception as e:
+        return f"[Error Indikator] {e}"
+
+# ==========================================
+# 2. AGEN PENCARI BERITA (HYBRID + SEKTORAL)
 # ==========================================
 def dapatkan_keywords_cerdas(ticker, sektor):
     """
-    [FITUR TAMBAHAN]
-    Membuat query pencarian yang pintar. 
-    Tidak hanya mencari nama saham, tapi juga 'Underlying Asset'-nya.
+    [FITUR LAMA YANG DIPERTAHANKAN]
+    Mencari korelasi komoditas dan sektor.
     """
     sektor = sektor.upper() if sektor else "GENERAL"
-    query = f"berita saham {ticker} indonesia terbaru hari ini corporate action"
+    query = f"berita saham {ticker} indonesia terbaru hari ini sentimen"
     
-    # Logika Korelasi Pasar Global & Komoditas
-    if any(x in sektor for x in ["GOLD", "MINING", "METAL", "BASIC MAT"]):
-        query += " + harga emas nikel tembaga dunia hari ini"
-    elif any(x in sektor for x in ["OIL", "GAS", "ENERGY"]):
-        query += " + harga minyak mentah dunia brent wti"
-    elif "COAL" in sektor or ticker in ["ADRO", "PTBA", "ITMG", "HRUM", "BUMI"]:
-        query += " + harga batubara Newcastle ICE terbaru"
-    elif "BANK" in sektor or "FINANCE" in sektor:
-        query += " + suku bunga BI Rate The Fed inflasi"
-    elif any(x in sektor for x in ["PALM", "AGRI", "PLANTATION"]):
-        query += " + harga CPO crude palm oil malaysia"
-    elif "TECH" in sektor or ticker in ["GOTO", "BUKA", "EMTK"]:
-        query += " + sentimen saham teknologi global nasdaq"
-    elif "CONSUMER" in sektor:
-        query += " + daya beli masyarakat inflasi rupiah"
-        
+    if any(x in sektor for x in ["GOLD", "MINING", "METAL"]): query += " + harga komoditas emas nikel dunia"
+    elif any(x in sektor for x in ["OIL", "ENERGY"]): query += " + harga minyak brent crude oil"
+    elif "COAL" in sektor or ticker in ["ADRO", "PTBA", "ITMG"]: query += " + harga batubara newcastle"
+    elif "BANK" in sektor: query += " + suku bunga BI rate rupiah"
+    elif "TECH" in sektor: query += " + saham teknologi nasdaq goto"
+    elif "CPO" in sektor or "PLANTATION" in sektor: query += " + harga CPO malaysia"
     return query
 
-# ==========================================
-# 2. AGEN PENCARI BERITA (HYBRID + CERDAS)
-# ==========================================
 def agen_pencari_berita_robust(ticker, sektor, berita_yahoo_backup):
-    """
-    Strategi Berlapis:
-    1. Pakai Keyword Cerdas untuk DuckDuckGo (Internet).
-    2. Kalau Gagal/Kosong, pakai data Yahoo Finance.
-    3. Dirangkum oleh Groq.
-    """
     laporan_mentah = ""
-    sumber_data = "YAHOO (BACKUP)" # Default
+    sumber_data = "YAHOO (BACKUP)"
 
-    # --- LAYER 1: DUCKDUCKGO (INTERNET + KOMODITAS) ---
     if DDGS:
         try:
-            # Gunakan keyword cerdas (Saham + Komoditas terkait)
-            query_smart = dapatkan_keywords_cerdas(ticker, sektor)
-            print(f"🌍 Searching: {query_smart}...")
-            
-            results = DDGS().text(query_smart, max_results=5)
-            
+            query = dapatkan_keywords_cerdas(ticker, sektor)
+            print(f"🌍 Searching: {query}")
+            results = DDGS().text(query, max_results=5)
             if results:
-                ddg_text = []
-                for r in results:
-                    ddg_text.append(f"- {r['title']}: {r['body']}")
+                ddg_text = [f"- {r['title']}: {r['body']}" for r in results]
                 laporan_mentah = "\n".join(ddg_text)
-                sumber_data = "INTERNET (REAL-TIME + SEKTORAL)"
-            else:
-                print("⚠️ DuckDuckGo: Hasil Kosong.")
-        except Exception as e:
-            print(f"⚠️ DuckDuckGo Error: {e}")
+                sumber_data = "INTERNET (REAL-TIME)"
+        except Exception as e: print(f"⚠️ DDG Error: {e}")
 
-    # --- LAYER 2: FALLBACK KE YAHOO ---
     if not laporan_mentah or len(laporan_mentah) < 50:
-        print("🔄 Mengalihkan ke Data Yahoo Finance...")
-        yahoo_text = []
-        if berita_yahoo_backup:
-            for b in berita_yahoo_backup:
-                judul = b.get('title', '')
-                yahoo_text.append(f"- {judul}")
-            laporan_mentah = "\n".join(yahoo_text)
-        else:
-            laporan_mentah = "Data berita spesifik tidak ditemukan."
+        yahoo_text = [f"- {b.get('title', '')}" for b in berita_yahoo_backup]
+        laporan_mentah = "\n".join(yahoo_text) if yahoo_text else "Tidak ada berita spesifik."
 
-    # --- LAYER 3: RANGKUMAN WARTAWAN AI ---
-    if not client_groq:
-        return f"[{sumber_data}] {laporan_mentah}"
+    if not client_groq: return f"[{sumber_data}] {laporan_mentah}"
 
     prompt_wartawan = f"""
-    Kamu adalah Reporter Pasar Modal Senior.
-    
-    DATA MENTAH ({ticker} - Sektor {sektor}):
+    Kamu adalah Reporter Pasar Modal.
+    DATA MENTAH ({sumber_data}):
     {laporan_mentah}
     
     TUGAS:
-    1. Cari info langsung tentang {ticker} (Laba, Dividen, Masalah Hukum).
-    2. Cari info TIDAK LANGSUNG (Harga Komoditas/Suku Bunga) yang ada di teks.
-    3. Rangkum maksimal 4 poin fakta penting. Jika data tidak relevan, tulis "NIL".
+    1. Ambil inti berita yang relevan dengan harga saham.
+    2. Jika ada sentimen komoditas/global, masukkan.
+    3. Buat ringkasan padat 3 poin.
     """
-    
     try:
         chat = client_groq.chat.completions.create(
             messages=[{"role": "user", "content": prompt_wartawan}],
             model="llama-3.3-70b-versatile",
         )
         return f"**SUMBER: {sumber_data}**\n" + chat.choices[0].message.content.strip()
-    except:
-        return f"[{sumber_data} - Raw]\n{laporan_mentah}"
+    except: return f"[{sumber_data}] {laporan_mentah}"
 
 # ==========================================
-# 3. AGEN KEPALA ANALIS (ANALISA 6 POIN PRO)
+# 3. AGEN KEPALA ANALIS (YANG SEPAHAMAN DENGAN SCANNER)
 # ==========================================
 def agen_analis_utama(data_context):
     """
-    Otak Utama: Menggabungkan Teknikal + Fundamental + Berita Sektoral.
+    Prompt ini dirancang khusus agar AI 'membaca' 7 Indikator yang sudah kita hitung.
     """
     prompt_analis = f"""
-    Kamu adalah Fund Manager Senior (Institusi) dan Trader Profesional.
+    Kamu adalah Fund Manager Senior beraliran **"MOMENTUM & QUANTITATIVE TRADER"**.
     
-    DATA LENGKAP SAHAM:
+    TUGAS UTAMA:
+    Analisa saham ini berdasarkan **7 DATA INDIKATOR TEKNIKAL** yang disediakan di bawah.
+    
+    DATA LENGKAP:
     {data_context}
     
-    WAJIB BERIKAN ANALISA TAJAM (6 POIN):
-    
-    1. 🌍 **Sintesa Berita & Korelasi Sektoral**
-       (Jelaskan hubungan berita/komoditas dengan harga saham. Misal: Emas naik -> ANTM naik? Atau justru anomali? Hati-hati jebakan news.)
-       
-    2. 🕵️‍♂️ **Bandarmologi (Flow Analysis)**
-       (Analisis Volume & Smart Money. Apakah Bandar sedang Akumulasi diam-diam atau Distribusi di pucuk?)
-       
-    3. 📊 **Valuasi & Fundamental**
-       (Cek data PER/PBV yang tersedia. Apakah harga sekarang Murah (Undervalued) atau Mahal (Gorengan)?)
-       
-    4. ⏱️ **Timing & Tren Technical**
-       (Lihat Candle & Trend 1 tahun. Apakah momentum 'Buy on Weakness' atau 'Buy on Breakout'?)
+    ⚠️ **LOGIKA ANALISIS (WAJIB PATUH AGAR SEJALAN DENGAN SCANNER):**
+    1. **Lihat RSI & Stochastic:** Jika RSI > 60 dan Stochastic naik, itu **MOMENTUM KUAT** (Bukan Overbought). Sarankan BUY/FOLLOW TREND.
+    2. **Lihat Volume Ratio:** Jika Volume > 1.2x Rata-rata, konfirmasi ada **AKUMULASI BANDAR**.
+    3. **Lihat MACD:** Jika Histogram Positif, tren sedang menguat.
+    4. **Lihat Tren Jangka Panjang (MA200):** Jika Harga > MA200, prioritas **BUY ON DIP** atau **BREAKOUT**.
+    5. **Jangan Terjebak Fundamental:** Jika Teknikal sangat bagus (banyak indikator hijau) tapi Fundamental biasa saja, tetap berikan rekomendasi **TRADING CEPAT/SCALPING**.
 
-    5. 🎯 **Strategi Trading**
-       - Pilih: (SCALPING / SWING / INVEST / BPJS / BSJP / HINDARI).
-       - Tentukan Entry Price & Target Price (Take Profit) yang logis.
-       
-    6. ⚖️ **VERDICT FINAL**
-       (Kesimpulan: STRONG BUY / BUY / WAIT / SELL).
+    JAWAB 6 POIN INI:
+    1. 🌍 **Korelasi Berita & Makro** (Apakah sentimen mendukung data teknikal?)
+    2. 🕵️‍♂️ **Bandarmologi** (Baca Volume Ratio & Pergerakan Harga. Akumulasi/Distribusi?)
+    3. 📊 **Valuasi** (Review PER/PBV. Apakah murah atau mahal?)
+    4. ⏱️ **Kekuatan Tren (7 Indikator)** (Jelaskan kesimpulan dari RSI, MACD, MA yang ada di data.)
+    5. 🎯 **Strategi Trading** (Pilih: SCALPING BPJS/ BSJP/ SWING / INVEST / HINDARI/ CALON ARA).
+    6. ⚖️ **VERDICT FINAL** (STRONG BUY / BUY / WAIT / SELL).
     
-    Jawab dengan bahasa trader Indonesia yang lugas, objektif, dan tanpa basa-basi.
+    Jawab tegas, gunakan data angka indikator di atas sebagai bukti analisamu.
     """
 
-    # Prioritas 1: DeepSeek
-    if client_deepseek:
+    client = client_deepseek if client_deepseek else client_groq
+    model = "deepseek-chat" if client_deepseek else "llama-3.3-70b-versatile"
+    
+    if client:
         try:
-            res = client_deepseek.chat.completions.create(
-                model="deepseek-chat", 
-                messages=[{"role": "user", "content": prompt_analis}]
-            )
+            res = client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt_analis}])
             return res.choices[0].message.content.strip()
         except: pass
     
-    # Prioritas 2: Groq
-    if client_groq:
-        try:
-            chat = client_groq.chat.completions.create(
-                messages=[{"role": "user", "content": prompt_analis}],
-                model="llama-3.3-70b-versatile",
-            )
-            return chat.choices[0].message.content.strip()
-        except: pass
-
-    # Prioritas 3: Gemini
     if client_gemini:
         try:
-            return client_gemini.models.generate_content(
-                model='gemini-1.5-flash', contents=prompt_analis
-            ).text.strip()
+            return client_gemini.models.generate_content(model='gemini-1.5-flash', contents=prompt_analis).text.strip()
         except: pass
             
-    return "Maaf, Analisa AI tidak tersedia saat ini."
+    return "Analisa AI sedang offline."
 
 # ==========================================
-# 4. DATABASE, CACHE & UTILS
+# 4. DATABASE & UTILS
 # ==========================================
 CACHE_DATA = {}
 CACHE_TIMEOUT = 300 
 MARKET_STATUS = {"condition": "NORMAL", "last_check": 0}
 
-DATABASE_SYARIAH = [
-    "ADRO", "AKRA", "ANTM", "ASII", "BRIS", "BRPT", "BUKA", "CPIN", 
-    "EMTK", "EXCL", "GOTO", "HRUM", "ICBP", "INCO", "INDF", "INKP", 
-    "INTP", "ISAT", "ITMG", "JPFA", "KLBF", "MDKA", "MEDC", "PGAS", 
-    "PTBA", "SCMA", "SIDO", "SMGR", "TPIA", "UNTR", "UNVR",
-    "ACES", "ADHI", "ADMR", "AGII", "AMMN", "AMRT", "ASSA", "AUTO", 
-    "AVIA", "BIRD", "BISI", "BLESS", "BMTR", "BTPS", "BUMI", "BYAN", 
-    "CINT", "CLEO", "CMRY", "CTRA", "DEWAN", "DOID", "DRMA", "ELSA", 
-    "ENRG", "ERAA", "ESSA", "FREN", "HEAL", "HOKI", "HMSP", "INDY", 
-    "INRA", "JSMR", "KAEF", "KRYA", "LSIP", "MAPI", "MAPA", "MBMA", 
-    "MCOL", "MIKA", "MNCN", "MPPA", "MTEL", "MYOR", "NCKL", "NICL", 
-    "PANI", "PGEO", "PNBN", "PNLF", "PTPP", "PWON", "RAJA", "RALS", 
-    "RMKE", "ROTI", "SAME", "SCCO", "SILO", "SIMP", "SMDR", "SMRA", 
-    "SMSM", "SRTG", "SSIA", "STAA", "TAPG", "TBIG", "TINS", "TKIM", 
-    "TLKM", "TOWR", "TRIN", "TSPC", "ULTJ", "WIKA", "WIIM", "WOOD"
-]
-MARKET_UNIVERSE = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "UNTR", "ICBP", "INDF", "GOTO", "MDKA", "ANTM", "INCO", "PGAS", "ADRO", "PTBA", "BRPT", "BREN", "AMMN"]
+DATABASE_SYARIAH = ["ADRO", "ANTM", "ASII", "BRIS", "GOTO", "TLKM", "UNTR", "ICBP", "INDF", "PGAS", "PTBA", "MDKA", "ACES", "ELSA"]
+MARKET_UNIVERSE = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "UNTR", "ICBP", "GOTO", "ANTM", "ADRO", "BREN", "AMMN", "MDKA"]
 WATCHLIST = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "GOTO", "ANTM", "ADRO", "UNTR"]
 
 def validasi_histori_panjang(ticker_lengkap, data_short):
@@ -239,18 +233,16 @@ def validasi_histori_panjang(ticker_lengkap, data_short):
         if hist.empty: return 0, {} 
         current_price = data_short['last_price']
         price_1y_ago = hist['Close'].iloc[0]
-        max_1y = hist['High'].max()
-        min_1y = hist['Low'].min()
+        max_1y = hist['High'].max(); min_1y = hist['Low'].min()
         avg_vol = hist['Volume'].mean()
 
-        penalty = 0
-        alasan_penalti = []
-        if current_price < price_1y_ago: penalty += 20; alasan_penalti.append("Downtrend 1Y")
-        if current_price < 60: penalty += 30; alasan_penalti.append("Saham Gocap")
-        if avg_vol < 50000: penalty += 25; alasan_penalti.append("Tidak Likuid")
+        penalty = 0; reasons = []
+        if current_price < price_1y_ago: penalty += 20; reasons.append("Downtrend 1Y")
+        if current_price < 60: penalty += 30; reasons.append("Saham Gocap")
+        if avg_vol < 50000: penalty += 25; reasons.append("Tidak Likuid")
         
         final_score = max(0, data_short['score'] - penalty)
-        hist_data = {"max_1y": max_1y, "min_1y": min_1y, "avg_volume": avg_vol, "note": ", ".join(alasan_penalti) if alasan_penalti else "Valid"}
+        hist_data = {"max_1y": max_1y, "min_1y": min_1y, "avg_volume": avg_vol, "note": ", ".join(reasons) if reasons else "Valid"}
         return final_score, hist_data
     except: return data_short['score'], {}
 
@@ -262,12 +254,11 @@ def get_cached_analysis(ticker):
     data = analisa_multistrategy(ticker)
     if data['last_price'] > 0:
         new_score, hist_data = validasi_histori_panjang(ticker, data)
-        data['score'] = int(new_score)
-        data['hist_data'] = hist_data
+        data['score'] = int(new_score); data['hist_data'] = hist_data
         CACHE_DATA[ticker] = {'data': data, 'timestamp': now}
     return data
 
-# [FITUR TAMBAHAN] Ambil Data Fundamental Live
+# [FITUR TAMBAHAN LAMA] Ambil Data Fundamental Live
 def ambil_data_fundamental_live(ticker_lengkap):
     try:
         stock = yf.Ticker(ticker_lengkap)
@@ -277,9 +268,10 @@ def ambil_data_fundamental_live(ticker_lengkap):
             "per": info.get('trailingPE', 0),
             "pbv": info.get('priceToBook', 0),
             "market_cap": info.get('marketCap', 0),
-            "text_summary": f"Sektor: {info.get('sector')} | PER: {info.get('trailingPE', 0):.2f}x | PBV: {info.get('priceToBook', 0):.2f}x"
+            "roe": info.get('returnOnEquity', 0),
+            "text_summary": f"Sektor: {info.get('sector')} | PER: {info.get('trailingPE', 0):.2f}x | PBV: {info.get('priceToBook', 0):.2f}x | ROE: {info.get('returnOnEquity', 0):.2f}"
         }
-    except: return {"sektor": "General", "per": 0, "pbv": 0, "market_cap": 0, "text_summary": "Data Fundamental N/A"}
+    except: return {"sektor": "General", "per": 0, "pbv": 0, "market_cap": 0, "roe": 0, "text_summary": "Data Fundamental N/A"}
 
 def ambil_data_live_lengkap(ticker_lengkap):
     try:
@@ -304,89 +296,32 @@ def cek_kondisi_market():
     return MARKET_STATUS['condition']
 
 # ==========================================
-# 5. LOGIKA PLAN SAKTI (PERHITUNGAN ANGKA)
+# 5. LOGIKA PLAN SAKTI
 # ==========================================
-def get_tick_size(harga):
-    if harga < 200: return 1
-    elif harga < 500: return 2
-    elif harga < 2000: return 5
-    elif harga < 5000: return 10
-    else: return 25
-
-def bulatkan_ke_tick(harga):
-    if harga <= 0: return 0
-    tick = get_tick_size(harga)
-    return int(round(harga / tick) * tick)
-
-def get_psychological_step(harga):
-    if harga < 200: return 10
-    elif harga < 1000: return 50
-    elif harga < 5000: return 100
-    else: return 250
-
-def format_angka(nilai):
-    return "{:,}".format(int(nilai)).replace(",", ".")
-
-def hitung_plan_sakti(data_analisa, ticker_fibo=None):
-    harga_sekarang = data_analisa.get('last_price', 0)
-    hist_data = data_analisa.get('hist_data', {})
-    support_short = data_analisa.get('support', 0)
-    if support_short == 0: support_short = int(harga_sekarang * 0.96)
-    tipe_trading = data_analisa.get('type', 'UNKNOWN')
-
-    if harga_sekarang <= 0: return "-", 0, "-"
+def hitung_plan_sakti(data_analisa):
+    harga = data_analisa.get('last_price', 0)
+    if harga <= 0: return "-", 0, "-"
+    support = data_analisa.get('support', int(harga * 0.95))
     
-    base_support = support_short
-    tick_size = get_tick_size(base_support)
-    buy_low = bulatkan_ke_tick(base_support + (2 * tick_size))
-    buy_high = bulatkan_ke_tick(buy_low + (3 * tick_size))
+    # Tick Rule Indonesia
+    tick = 1 if harga<200 else 2 if harga<500 else 5 if harga<2000 else 10 if harga<5000 else 25
     
-    status_entry = ""
-    if harga_sekarang > (buy_high * 1.03): status_entry = "\n⚠️ Harga Lari"
-    elif harga_sekarang < buy_low: buy_low = harga_sekarang
+    # Strategi Entry
+    buy_low = support + (2 * tick)
+    buy_high = buy_low + (3 * tick)
+    entry_str = f"{buy_low} - {buy_high}"
+    if harga > buy_high: entry_str += " (Tunggu Koreksi)"
+    
+    # Stop Loss & Target
+    sl = support - (5 * tick)
+    tp1 = int(buy_low * 1.04); tp2 = int(buy_low * 1.08)
+    
+    return entry_str, sl, f"TP1: {tp1} | TP2: {tp2}"
 
-    entry_str = f"{format_angka(buy_low)} - {format_angka(buy_high)}{status_entry}"
-
-    sl_raw = base_support - (6 * get_tick_size(base_support))
-    sl = bulatkan_ke_tick(sl_raw)
-
-    if tipe_trading == "ARA": 
-        tp_str = "HOLD SAMPAI ARA 🚀"
-        sl = bulatkan_ke_tick(harga_sekarang * 0.92)
-    elif tipe_trading == "INVEST":
-        tp_str = "HOLD JANGKA PANJANG"
-        sl = bulatkan_ke_tick(harga_sekarang * 0.85)
-    else:
-        tp1 = bulatkan_ke_tick(buy_low * 1.04)
-        max_1y = hist_data.get('max_1y', 0)
-        if max_1y > buy_low and max_1y < (buy_low * 1.5): tp2_raw = max_1y
-        else: tp2_raw = buy_low * 1.08
-
-        if ticker_fibo:
-            try:
-                hist = yf.Ticker(ticker_fibo).history(period="1mo")
-                if not hist.empty:
-                    swing_high = hist['High'].max()
-                    swing_low = hist['Low'].min()
-                    swing_range = swing_high - swing_low
-                    tp_fibo = swing_low + (swing_range * 1.618)
-                    if tp_fibo < tp2_raw and tp_fibo > buy_low: tp2_raw = tp_fibo
-            except: pass
-        
-        tp2 = bulatkan_ke_tick(tp2_raw)
-        step = get_psychological_step(tp2)
-        tp3_raw = (int(tp2 / step) + 1) * step
-        if tp3_raw <= tp2: tp3_raw += step
-        tp3 = bulatkan_ke_tick(tp3_raw)
-
-        tp_str = (f"🎯 TP1: {format_angka(tp1)}\n"
-                  f"🚀 TP2: {format_angka(tp2)}\n"
-                  f"💎 TP3: {format_angka(tp3)}")
-
-    return entry_str, sl, tp_str
+def format_angka(nilai): return "{:,}".format(int(nilai)).replace(",", ".")
 
 # ==========================================
-# 6. ENDPOINT DETAIL (CORE LOGIC UTAMA)
+# 6. ENDPOINT DETAIL (AGGREGATOR V8)
 # ==========================================
 @app.route('/api/stock-detail', methods=['GET'])
 def get_stock_detail():
@@ -395,58 +330,55 @@ def get_stock_detail():
     
     ticker_lengkap = ticker_polos + ".JK"
     data = get_cached_analysis(ticker_lengkap)
+    if data['last_price'] == 0: return jsonify({"error": "Not Found"})
     
-    if data['last_price'] == 0:
-        return jsonify({"error": "Not Found", "analysis": {"score":0, "verdict":"ERR", "reason":"-", "type":"-"}})
+    # --- PENGUMPULAN DATA PENDUKUNG (SUPAYA AI PAHAM) ---
     
-    # 1. Ambil Data Teknikal Live
-    info_live = ambil_data_live_lengkap(ticker_lengkap)
-    hist_data = data.get('hist_data', {})
-    entry, sl, tp = hitung_plan_sakti(data, ticker_fibo=ticker_lengkap)
-
-    # 2. [TAMBAHAN] Ambil Data Fundamental Live
+    # 1. Data Fundamental (PER/PBV/ROE)
     funda = ambil_data_fundamental_live(ticker_lengkap)
-
-    score = data['score']
-    verdict = data['verdict']
-    catatan_histori = hist_data.get('note', 'Valid')
-    trend_1y = hist_data.get('trend_1y', 'N/A')
     
-    # 3. Ambil Berita Yahoo (Backup)
+    # 2. Data Teknikal Mentah (7+ Indikator) [FITUR BARU]
+    # AI akan melihat data ini agar sepaham dengan scanner
+    teknikal_lengkap = hitung_indikator_lengkap(ticker_lengkap)
+    
+    # 3. Berita & Korelasi Sektoral [FITUR LAMA +]
     list_berita = ambil_berita_saham(ticker_lengkap)
-    
-    # 4. Cari Berita Internet (Hybrid + Korelasi Sektoral)
-    # Kita kirim 'sektor' agar pencarian lebih cerdas (Misal: Sektor Coal -> Cari harga batubara)
-    laporan_fakta_lengkap = agen_pencari_berita_robust(ticker_polos, funda['sektor'], list_berita)
+    laporan_berita = agen_pencari_berita_robust(ticker_polos, funda['sektor'], list_berita)
 
-    # 5. Analisa Final oleh Kepala Analis
+    # 4. Susun Context untuk AI
     data_context = f"""
     SAHAM: {ticker_polos}
     
-    [DATA TEKNIKAL SYSTEM]
-    - Skor: {score}/100 | Trend 1Y: {trend_1y}
-    - Warning: {catatan_histori}
-    {info_live}
+    [HASIL SCANNER PYTHON]
+    - Skor Akhir: {data['score']}/100 
+    - Rekomendasi Mesin: {data['verdict']}
+    - Catatan Scanner: {data.get('hist_data', {}).get('note', 'Valid')}
+    
+    {teknikal_lengkap}
     
     [DATA FUNDAMENTAL LIVE]
     {funda['text_summary']}
     - Market Cap: {funda['market_cap']:,}
     
-    [LAPORAN BERITA & KORELASI]
-    {laporan_fakta_lengkap}
+    [BERITA & SENTIMEN]
+    {laporan_berita}
     """
     
+    # 5. Analisa AI
     analisa_final = agen_analis_utama(data_context)
-    
-    rincian_teknikal = f"🔍 **SKOR {score} ({verdict})**\n"
-    if catatan_histori != "Valid": rincian_teknikal += f"⚠️ {catatan_histori}\n"
+    entry, sl, tp = hitung_plan_sakti(data)
 
-    reason_final = f"{rincian_teknikal}\n\n📰 **SENTIMEN & KORELASI:**\n{laporan_fakta_lengkap}\n\n====================\n🧠 **ANALISA FUND MANAGER:**\n{analisa_final}"
-    
+    # 6. Formatting Output
+    reason_final = f"📊 **SKOR SCANNER: {data['score']} ({data['verdict']})**\n"
+    if "Valid" not in data.get('hist_data', {}).get('note', 'Valid'):
+        reason_final += f"⚠️ **Scanner Note:** {data['hist_data']['note']}\n"
+        
+    reason_final += f"\n📰 **SENTIMEN BERITA:**\n{laporan_berita}\n\n====================\n🧠 **ANALISA AI (DATA-DRIVEN):**\n{analisa_final}"
+
     pct = data.get('change_pct', 0)
     tanda = "+" if pct >= 0 else ""
 
-    stock_detail = {
+    return jsonify({
         "ticker": ticker_polos,
         "company_name": f"Rp {format_angka(data['last_price'])} ({tanda}{pct:.2f}%)",
         "badges": { "syariah": ticker_polos in DATABASE_SYARIAH, "lq45": True },
@@ -459,8 +391,7 @@ def get_stock_detail():
         "plan": { "entry": entry, "stop_loss": sl, "take_profit": tp },
         "news": list_berita, 
         "is_watchlist": ticker_polos in WATCHLIST
-    }
-    return jsonify(stock_detail)
+    })
 
 # ==========================================
 # 7. SCANNER & WATCHLIST (TETAP SAMA)
@@ -469,22 +400,16 @@ def process_single_stock(kode, target_strategy, min_score_needed):
     try:
         ticker = kode + ".JK"
         data = get_cached_analysis(ticker)
-        if data['last_price'] == 0: return None
-        if data['score'] < min_score_needed: return None 
-
+        if data['last_price'] == 0 or data['score'] < min_score_needed: return None
+        
         tipe_ditemukan = data['type']
-        if target_strategy == 'SYARIAH': pass 
-        elif target_strategy not in ['ALL', 'WATCHLIST']:
+        if target_strategy != 'ALL' and target_strategy != 'WATCHLIST' and target_strategy != 'SYARIAH':
             if target_strategy not in tipe_ditemukan: return None
 
-        entry, sl, tp = hitung_plan_sakti(data, ticker_fibo=None)
-        pct = data.get('change_pct', 0)
-        tanda = "+" if pct >= 0 else ""
-        info_harga = f"Rp {format_angka(data['last_price'])} ({tanda}{pct:.2f}%)"
-
+        entry, sl, tp = hitung_plan_sakti(data)
         return {
             "ticker": kode,
-            "company_name": info_harga,
+            "company_name": f"Rp {format_angka(data['last_price'])}",
             "badges": { "syariah": kode in DATABASE_SYARIAH, "lq45": True },
             "analysis": {
                 "score": int(data['score']),
@@ -493,8 +418,7 @@ def process_single_stock(kode, target_strategy, min_score_needed):
                 "type": tipe_ditemukan
             },
             "plan": {"entry": entry, "stop_loss": sl, "take_profit": tp},
-            "news": [], 
-            "is_watchlist": kode in WATCHLIST
+            "news": [], "is_watchlist": kode in WATCHLIST
         }
     except: return None
 
@@ -502,16 +426,12 @@ def process_single_stock(kode, target_strategy, min_score_needed):
 def get_scan_results():
     target_strategy = request.args.get('strategy', 'ALL') 
     kondisi_market = cek_kondisi_market()
-    MIN_SCORE = 60 
-    if kondisi_market == "CRASH": MIN_SCORE = 80 
+    MIN_SCORE = 60 if kondisi_market == "NORMAL" else 80
     
-    daftar_scan = []
-    if target_strategy == 'SYARIAH': daftar_scan = DATABASE_SYARIAH 
-    elif target_strategy == 'ALL' or target_strategy == 'WATCHLIST': daftar_scan = WATCHLIST
-    else: daftar_scan = MARKET_UNIVERSE
+    daftar_scan = DATABASE_SYARIAH if target_strategy == 'SYARIAH' else WATCHLIST if target_strategy in ['ALL', 'WATCHLIST'] else MARKET_UNIVERSE
+    limit_scan = daftar_scan[:60]
 
     results = []
-    limit_scan = daftar_scan[:60] 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(process_single_stock, kode, target_strategy, MIN_SCORE): kode for kode in limit_scan}
         for future in concurrent.futures.as_completed(futures):
@@ -536,7 +456,7 @@ def remove_watchlist():
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
-        "status": "Server Alpha Hunter V7 PRO ONLINE 🚀",
+        "status": "Server Alpha Hunter V8 (Synchronized Logic) ONLINE 🚀",
         "features": {
             "search": "Hybrid (DDG + Yahoo + Sectoral)",
             "analysis": "DeepSeek / Groq (6 Points)",
@@ -547,5 +467,5 @@ def index():
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 7860))
-    print(f"🚀 Alpha Hunter V7 Server berjalan di Port: {port}")
+    print(f"🚀 Alpha Hunter V8 Server Running on Port: {port}")
     app.run(host='0.0.0.0', port=port)

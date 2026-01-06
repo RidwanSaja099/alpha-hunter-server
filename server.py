@@ -204,7 +204,12 @@ def agen_analis_utama(data_context):
     2. 🕵️‍♂️ **Bandarmologi** (Baca Volume Ratio & Pergerakan Harga. Akumulasi/Distribusi?)
     3. 📊 **Valuasi** (Review PER/PBV. Apakah murah atau mahal?)
     4. ⏱️ **Kekuatan Tren (7 Indikator)** (Jelaskan kesimpulan dari RSI, MACD, MA yang ada di data.)
-    5. 🎯 **Strategi Trading** (Pilih: SCALPING / SWING / INVEST / HINDARI).
+  5. 🎯 **ACTION PLAN (WAJIB ISI ANGKA)**
+       - **STRATEGI:** (SCALPING / SWING / INVEST / HINDARI/ BPJS/ BSJP).
+       - **TIMING MASUK:** (Pagi saat Open? Tunggu koreksi sesi 1? Atau Buy on Breakout sore hari?).
+       - **AREA ENTRY:** Tentukan rentang harga beli (Contoh: 1200-1220).
+       - **TARGET PROFIT (TP):** TP1 dan TP2.
+       - **STOP LOSS (SL):** Titik cut loss.
     6. ⚖️ **VERDICT FINAL** (STRONG BUY / BUY / WAIT / SELL).
     
     Jawab tegas, gunakan data angka indikator di atas sebagai bukti analisamu.

@@ -53,70 +53,97 @@ if GEMINI_API_KEY and genai:
     except: print("⚠️ Gagal Init Gemini")
 
 # ==========================================
-# 1. FITUR V8: MESIN HITUNG 7 INDIKATOR (UTUH)
+# 1. FITUR BARU: MESIN 10 INDIKATOR (THE 10 COMMANDMENTS)
 # ==========================================
 def hitung_indikator_lengkap(ticker_lengkap):
-    """
-    Menghitung 7+ Indikator Teknikal secara manual menggunakan Pandas & Numpy.
-    Data ini akan disuapkan ke AI agar analisanya sangat akurat & sepaham dengan Scanner.
-    """
     try:
-        # Ambil data historis cukup panjang untuk MA200
+        # Ambil data historis cukup panjang
         df = yf.Ticker(ticker_lengkap).history(period="1y")
-        if len(df) < 200: return "Data Historis Tidak Cukup untuk Analisa Teknikal Lengkap."
+        if len(df) < 50: return "Data Historis Tidak Cukup."
 
-        # --- 1. RSI (14) ---
+        # --- DATA DASAR ---
+        close = df['Close'].iloc[-1]
+        high = df['High'].iloc[-1]
+        low = df['Low'].iloc[-1]
+        prev_close = df['Close'].iloc[-2]
+
+        # 1. RSI (14) - Momentum
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs)).iloc[-1]
 
-        # --- 2. MOVING AVERAGES (MA5, MA20, MA200) ---
-        close = df['Close'].iloc[-1]
-        ma5 = df['Close'].rolling(window=5).mean().iloc[-1]
-        ma20 = df['Close'].rolling(window=20).mean().iloc[-1]
-        ma200 = df['Close'].rolling(window=200).mean().iloc[-1] if len(df) > 200 else ma20
-
-        # --- 3. BOLLINGER BANDS ---
-        std = df['Close'].rolling(window=20).std().iloc[-1]
-        upper_bb = ma20 + (2 * std)
-        lower_bb = ma20 - (2 * std)
-        bb_pos = (close - lower_bb) / (upper_bb - lower_bb) # 0=Bawah, 1=Atas
-
-        # --- 4. MACD (12, 26, 9) ---
+        # 2. MACD - Tren Arah
         exp12 = df['Close'].ewm(span=12, adjust=False).mean()
         exp26 = df['Close'].ewm(span=26, adjust=False).mean()
         macd_line = exp12.iloc[-1] - exp26.iloc[-1]
         signal_line = (exp12 - exp26).ewm(span=9, adjust=False).mean().iloc[-1]
         macd_hist = macd_line - signal_line
 
-        # --- 5. STOCHASTIC OSCILLATOR ---
+        # 3. BOLLINGER BANDS - Volatilitas
+        ma20 = df['Close'].rolling(window=20).mean().iloc[-1]
+        std = df['Close'].rolling(window=20).std().iloc[-1]
+        upper_bb = ma20 + (2 * std)
+        lower_bb = ma20 - (2 * std)
+        bb_pos = (close - lower_bb) / (upper_bb - lower_bb)
+
+        # 4. STOCHASTIC - Swing
         low14 = df['Low'].rolling(window=14).min().iloc[-1]
         high14 = df['High'].rolling(window=14).max().iloc[-1]
         stoch_k = 100 * ((close - low14) / (high14 - low14))
 
-        # --- 6. VOLUME ANALYSIS ---
+        # 5. MOVING AVERAGES - Tren Jangka
+        ma5 = df['Close'].rolling(window=5).mean().iloc[-1]
+        ma200 = df['Close'].rolling(window=200).mean().iloc[-1] if len(df) > 200 else ma20
+
+        # 6. VOLUME RATIO - Ledakan Volume
         vol_now = df['Volume'].iloc[-1]
         vol_avg = df['Volume'].rolling(window=20).mean().iloc[-1]
         vol_ratio = vol_now / vol_avg if vol_avg > 0 else 0
 
-        # --- 7. TREN FILTER ---
-        trend_long = "BULLISH (Di atas MA200)" if close > ma200 else "BEARISH (Di bawah MA200)"
+        # --- INDIKATOR TAMBAHAN (SANGAT KRUSIAL) ---
+
+        # 7. OBV (On-Balance Volume) - Deteksi Bandar
+        # Menghitung akumulasi volume bersih
+        obv = (np.sign(df['Close'].diff()) * df['Volume']).fillna(0).cumsum()
+        obv_trend = "NAIK (Akumulasi)" if obv.iloc[-1] > obv.iloc[-5] else "TURUN (Distribusi)"
+
+        # 8. ATR (Average True Range) - Untuk Stop Loss Dinamis
+        # Menghitung seberapa ganas pergerakan harga (napas saham)
+        tr1 = df['High'] - df['Low']
+        tr2 = abs(df['High'] - df['Close'].shift(1))
+        tr3 = abs(df['Low'] - df['Close'].shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=14).mean().iloc[-1]
+
+        # 9. PIVOT POINTS (Classic) - Untuk Target Price Presisi
+        # (High + Low + Close) / 3 dari hari kemarin
+        pp = (df['High'].iloc[-2] + df['Low'].iloc[-2] + df['Close'].iloc[-2]) / 3
+        r1 = (2 * pp) - df['Low'].iloc[-2]  # Resistance 1 (Target 1)
+        s1 = (2 * pp) - df['High'].iloc[-2] # Support 1 (Area Buy)
+        
+        # 10. TREND FILTER SUMMARY
+        trend_long = "BULLISH" if close > ma200 else "BEARISH"
         trend_short = "UP" if ma5 > ma20 else "DOWN"
 
         return f"""
-        [DATA TEKNIKAL LENGKAP - 7 INDIKATOR]
-        1. RSI (14): {rsi:.2f} (Catatan: >70 Strong Trend, <30 Oversold)
-        2. MACD Momentum: {'POSITIF' if macd_hist > 0 else 'NEGATIF'} (Hist: {macd_hist:.2f})
-        3. Bollinger Bands: Posisi {bb_pos:.2f} (Mendekati 1.0=Upper Band/Rawan Koreksi)
-        4. Stochastic %K: {stoch_k:.2f} (Momentum Swing)
-        5. Volume Flow: {vol_ratio:.2f}x Rata-rata (Jika >1.2x = Akumulasi Kuat)
-        6. Tren Jangka Pendek (MA5 vs MA20): {trend_short}
-        7. Tren Jangka Panjang (MA200): {trend_long} | Harga: {close:.0f} vs MA200: {ma200:.0f}
+        [DATA TEKNIKAL SUPER LENGKAP - 10 INDIKATOR]
+        1. RSI (14): {rsi:.2f} (Momentum)
+        2. MACD Hist: {macd_hist:.2f} (Arah Tren)
+        3. Stoch %K: {stoch_k:.2f} (Swing Position)
+        4. Bollinger Pos: {bb_pos:.2f} (Overbought/Oversold Volatility)
+        5. MA Trend: Short={trend_short} | Long={trend_long} (MA200: {ma200:.0f})
+        6. Volume Ratio: {vol_ratio:.2f}x (Ledakan Volume)
+        
+        --- DATA BANDARMOLOGI & PLAN ---
+        7. OBV (Smart Money): {obv_trend} - Cek divergensi dengan harga.
+        8. ATR (Volatilitas): {atr:.0f} (Gunakan angka ini untuk jarak Stop Loss aman).
+        9. PIVOT POINT (Area Penting): Support S1={s1:.0f} | Resistance R1={r1:.0f}.
+        10. POSISI HARGA: {close:.0f}
         """
     except Exception as e:
-        return f"[Error Indikator] {e}"
+        return f"Gagal Hitung: {e}"
 
 # ==========================================
 # 2. FITUR V7: AGEN PENCARI BERITA (HYBRID + SEKTORAL)
@@ -180,41 +207,42 @@ def agen_pencari_berita_robust(ticker, sektor, berita_yahoo_backup):
 # ==========================================
 def agen_analis_utama(data_context):
     """
-    Menggunakan sistem FAILOVER: DeepSeek -> Groq -> Gemini.
-    Tidak akan menyerah sampai dapat jawaban.
+    Prompt diperbarui untuk 10 Indikator + Action Plan Detail.
     """
     prompt_analis = f"""
     Kamu adalah Fund Manager Senior beraliran **"MOMENTUM & QUANTITATIVE TRADER"**.
     
     TUGAS UTAMA:
-    Analisa saham ini berdasarkan **7 DATA INDIKATOR TEKNIKAL** yang disediakan di bawah.
+    Analisa saham ini berdasarkan **10 DATA INDIKATOR TEKNIKAL** yang disediakan di bawah.
     
     DATA LENGKAP:
     {data_context}
     
     ⚠️ **LOGIKA ANALISIS (WAJIB PATUH AGAR SEJALAN DENGAN SCANNER):**
     1. **Lihat RSI & Stochastic:** Jika RSI > 60 dan Stochastic naik, itu **MOMENTUM KUAT** (Bukan Overbought). Sarankan BUY/FOLLOW TREND.
-    2. **Lihat Volume Ratio:** Jika Volume > 1.2x Rata-rata, konfirmasi ada **AKUMULASI BANDAR**.
+    2. **Lihat OBV & Volume:** Jika OBV naik dan Volume > 1.2x Rata-rata, konfirmasi **AKUMULASI BANDAR**.
     3. **Lihat MACD:** Jika Histogram Positif, tren sedang menguat.
     4. **Lihat Tren Jangka Panjang (MA200):** Jika Harga > MA200, prioritas **BUY ON DIP** atau **BREAKOUT**.
     5. **Jangan Terjebak Fundamental:** Jika Teknikal sangat bagus (banyak indikator hijau) tapi Fundamental biasa saja, tetap berikan rekomendasi **TRADING CEPAT/SCALPING**.
+    6. **Gunakan Pivot Point:** Gunakan angka Pivot/Support untuk Entry, dan Resistance untuk Target Profit.
 
-    JAWAB 6 POIN INI:
+    JAWAB 6 POIN INI SECARA TEGAS:
     1. 🌍 **Korelasi Berita & Makro** (Apakah sentimen mendukung data teknikal?)
-    2. 🕵️‍♂️ **Bandarmologi** (Baca Volume Ratio & Pergerakan Harga. Akumulasi/Distribusi?)
+    2. 🕵️‍♂️ **Bandarmologi** (Analisis OBV & Volume Ratio. Akumulasi/Distribusi?)
     3. 📊 **Valuasi** (Review PER/PBV. Apakah murah atau mahal?)
-    4. ⏱️ **Kekuatan Tren (7 Indikator)** (Jelaskan kesimpulan dari RSI, MACD, MA yang ada di data.)
-  5. 🎯 **ACTION PLAN (WAJIB ISI ANGKA)**
-       - **STRATEGI:** (SCALPING / SWING / INVEST / HINDARI/ BPJS/ BSJP).
+    4. ⏱️ **Kekuatan Tren (10 Indikator)** (Sintesa dari RSI, MACD, MA, Bollinger, dan OBV).
+
+    5. 🎯 **ACTION PLAN (WAJIB ISI ANGKA)**
+       - **STRATEGI:** (Pilih satu: SCALPING / SWING / INVEST / BPJS / BSJP / HINDARI).
        - **TIMING MASUK:** (Pagi saat Open? Tunggu koreksi sesi 1? Atau Buy on Breakout sore hari?).
-       - **AREA ENTRY:** Tentukan rentang harga beli (Contoh: 1200-1220).
-       - **TARGET PROFIT (TP):** TP1 dan TP2.
-       - **STOP LOSS (SL):** Titik cut loss.
+       - **AREA ENTRY:** Tentukan rentang harga beli (Gunakan Pivot S1/S2 atau MA5).
+       - **TARGET PROFIT (TP):** TP1, TP2, dan TP3 (Gunakan Pivot R1/R2).
+       - **STOP LOSS (SL):** Titik cut loss (Gunakan ATR atau Support terdekat).
+
     6. ⚖️ **VERDICT FINAL** (STRONG BUY / BUY / WAIT / SELL).
     
     Jawab tegas, gunakan data angka indikator di atas sebagai bukti analisamu.
     """
-
     # --- OPSI 1: DEEPSEEK (PRIORITAS) ---
     if client_deepseek:
         try:

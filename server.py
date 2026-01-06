@@ -31,29 +31,39 @@ from rumus_saham import analisa_multistrategy, ambil_berita_saham
 app = Flask(__name__)
 
 # ==========================================
-# 0. KONFIGURASI AI CLIENT
+# 0. KONFIGURASI AI CLIENT (ANTI-CRASH)
 # ==========================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-client_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_API_KEY else None
-client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY and genai else None
+client_groq = None
+if GROQ_API_KEY:
+    try: client_groq = Groq(api_key=GROQ_API_KEY)
+    except: print("⚠️ Gagal Init Groq")
+
+client_deepseek = None
+if DEEPSEEK_API_KEY:
+    try: client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+    except: print("⚠️ Gagal Init DeepSeek")
+
+client_gemini = None
+if GEMINI_API_KEY and genai:
+    try: client_gemini = genai.Client(api_key=GEMINI_API_KEY)
+    except: print("⚠️ Gagal Init Gemini")
 
 # ==========================================
-# 1. FITUR BARU: MESIN 7 INDIKATOR TEKNIKAL (MANUAL CALCULATOR)
+# 1. FITUR V8: MESIN HITUNG 7 INDIKATOR (UTUH)
 # ==========================================
 def hitung_indikator_lengkap(ticker_lengkap):
     """
-    [FITUR TAMBAHAN V8]
     Menghitung 7+ Indikator Teknikal secara manual menggunakan Pandas & Numpy.
     Data ini akan disuapkan ke AI agar analisanya sangat akurat & sepaham dengan Scanner.
     """
     try:
         # Ambil data historis cukup panjang untuk MA200
         df = yf.Ticker(ticker_lengkap).history(period="1y")
-        if len(df) < 50: return "Data Historis Tidak Cukup untuk Analisa Teknikal Lengkap."
+        if len(df) < 200: return "Data Historis Tidak Cukup untuk Analisa Teknikal Lengkap."
 
         # --- 1. RSI (14) ---
         delta = df['Close'].diff()
@@ -109,16 +119,13 @@ def hitung_indikator_lengkap(ticker_lengkap):
         return f"[Error Indikator] {e}"
 
 # ==========================================
-# 2. AGEN PENCARI BERITA (HYBRID + SEKTORAL)
+# 2. FITUR V7: AGEN PENCARI BERITA (HYBRID + SEKTORAL)
 # ==========================================
 def dapatkan_keywords_cerdas(ticker, sektor):
-    """
-    [FITUR LAMA YANG DIPERTAHANKAN]
-    Mencari korelasi komoditas dan sektor.
-    """
     sektor = sektor.upper() if sektor else "GENERAL"
     query = f"berita saham {ticker} indonesia terbaru hari ini sentimen"
     
+    # Menambah konteks pencarian agar lebih pintar
     if any(x in sektor for x in ["GOLD", "MINING", "METAL"]): query += " + harga komoditas emas nikel dunia"
     elif any(x in sektor for x in ["OIL", "ENERGY"]): query += " + harga minyak brent crude oil"
     elif "COAL" in sektor or ticker in ["ADRO", "PTBA", "ITMG"]: query += " + harga batubara newcastle"
@@ -146,32 +153,35 @@ def agen_pencari_berita_robust(ticker, sektor, berita_yahoo_backup):
         yahoo_text = [f"- {b.get('title', '')}" for b in berita_yahoo_backup]
         laporan_mentah = "\n".join(yahoo_text) if yahoo_text else "Tidak ada berita spesifik."
 
-    if not client_groq: return f"[{sumber_data}] {laporan_mentah}"
+    # Gunakan Groq untuk merangkum agar rapi (jika ada)
+    if client_groq: 
+        try:
+            prompt_wartawan = f"""
+            Kamu adalah Reporter Pasar Modal.
+            DATA MENTAH ({sumber_data}):
+            {laporan_mentah}
+            
+            TUGAS:
+            1. Ambil inti berita yang relevan dengan harga saham.
+            2. Jika ada sentimen komoditas/global, masukkan.
+            3. Buat ringkasan padat 3 poin.
+            """
+            chat = client_groq.chat.completions.create(
+                messages=[{"role": "user", "content": prompt_wartawan}],
+                model="llama-3.3-70b-versatile",
+            )
+            return f"**SUMBER: {sumber_data}**\n" + chat.choices[0].message.content.strip()
+        except: pass
 
-    prompt_wartawan = f"""
-    Kamu adalah Reporter Pasar Modal.
-    DATA MENTAH ({sumber_data}):
-    {laporan_mentah}
-    
-    TUGAS:
-    1. Ambil inti berita yang relevan dengan harga saham.
-    2. Jika ada sentimen komoditas/global, masukkan.
-    3. Buat ringkasan padat 3 poin.
-    """
-    try:
-        chat = client_groq.chat.completions.create(
-            messages=[{"role": "user", "content": prompt_wartawan}],
-            model="llama-3.3-70b-versatile",
-        )
-        return f"**SUMBER: {sumber_data}**\n" + chat.choices[0].message.content.strip()
-    except: return f"[{sumber_data}] {laporan_mentah}"
+    return f"[{sumber_data}] {laporan_mentah}"
 
 # ==========================================
-# 3. AGEN KEPALA ANALIS (YANG SEPAHAMAN DENGAN SCANNER)
+# 3. FITUR V9: AGEN KEPALA ANALIS (ANTI-OFFLINE / FAILOVER)
 # ==========================================
 def agen_analis_utama(data_context):
     """
-    Prompt ini dirancang khusus agar AI 'membaca' 7 Indikator yang sudah kita hitung.
+    Menggunakan sistem FAILOVER: DeepSeek -> Groq -> Gemini.
+    Tidak akan menyerah sampai dapat jawaban.
     """
     prompt_analis = f"""
     Kamu adalah Fund Manager Senior beraliran **"MOMENTUM & QUANTITATIVE TRADER"**.
@@ -194,27 +204,43 @@ def agen_analis_utama(data_context):
     2. 🕵️‍♂️ **Bandarmologi** (Baca Volume Ratio & Pergerakan Harga. Akumulasi/Distribusi?)
     3. 📊 **Valuasi** (Review PER/PBV. Apakah murah atau mahal?)
     4. ⏱️ **Kekuatan Tren (7 Indikator)** (Jelaskan kesimpulan dari RSI, MACD, MA yang ada di data.)
-    5. 🎯 **Strategi Trading** (Pilih: SCALPING BPJS/ BSJP/ SWING / INVEST / HINDARI/ CALON ARA).
+    5. 🎯 **Strategi Trading** (Pilih: SCALPING / SWING / INVEST / HINDARI).
     6. ⚖️ **VERDICT FINAL** (STRONG BUY / BUY / WAIT / SELL).
     
     Jawab tegas, gunakan data angka indikator di atas sebagai bukti analisamu.
     """
 
-    client = client_deepseek if client_deepseek else client_groq
-    model = "deepseek-chat" if client_deepseek else "llama-3.3-70b-versatile"
-    
-    if client:
+    # --- OPSI 1: DEEPSEEK (PRIORITAS) ---
+    if client_deepseek:
         try:
-            res = client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt_analis}])
+            print("🤖 Mencoba DeepSeek...")
+            res = client_deepseek.chat.completions.create(
+                model="deepseek-chat", messages=[{"role": "user", "content": prompt_analis}]
+            )
             return res.choices[0].message.content.strip()
-        except: pass
-    
+        except Exception as e: print(f"⚠️ DeepSeek Gagal: {e}")
+
+    # --- OPSI 2: GROQ (CADANGAN PERTAMA) ---
+    if client_groq:
+        try:
+            print("⚡ Switch ke Groq...")
+            chat = client_groq.chat.completions.create(
+                messages=[{"role": "user", "content": prompt_analis}],
+                model="llama-3.3-70b-versatile"
+            )
+            return chat.choices[0].message.content.strip()
+        except Exception as e: print(f"⚠️ Groq Gagal: {e}")
+
+    # --- OPSI 3: GEMINI (CADANGAN TERAKHIR) ---
     if client_gemini:
         try:
-            return client_gemini.models.generate_content(model='gemini-1.5-flash', contents=prompt_analis).text.strip()
-        except: pass
+            print("🌟 Switch ke Gemini...")
+            return client_gemini.models.generate_content(
+                model='gemini-1.5-flash', contents=prompt_analis
+            ).text.strip()
+        except Exception as e: print(f"⚠️ Gemini Gagal: {e}")
             
-    return "Analisa AI sedang offline."
+    return "⚠️ SYSTEM ERROR: Semua AI (DeepSeek, Groq, Gemini) tidak merespons. Cek kuota API/Koneksi."
 
 # ==========================================
 # 4. DATABASE & UTILS
@@ -258,7 +284,7 @@ def get_cached_analysis(ticker):
         CACHE_DATA[ticker] = {'data': data, 'timestamp': now}
     return data
 
-# [FITUR TAMBAHAN LAMA] Ambil Data Fundamental Live
+# [FITUR TAMBAHAN] Ambil Data Fundamental Live
 def ambil_data_fundamental_live(ticker_lengkap):
     try:
         stock = yf.Ticker(ticker_lengkap)
@@ -296,32 +322,89 @@ def cek_kondisi_market():
     return MARKET_STATUS['condition']
 
 # ==========================================
-# 5. LOGIKA PLAN SAKTI
+# 5. LOGIKA PLAN SAKTI (PERHITUNGAN ANGKA)
 # ==========================================
-def hitung_plan_sakti(data_analisa):
-    harga = data_analisa.get('last_price', 0)
-    if harga <= 0: return "-", 0, "-"
-    support = data_analisa.get('support', int(harga * 0.95))
-    
-    # Tick Rule Indonesia
-    tick = 1 if harga<200 else 2 if harga<500 else 5 if harga<2000 else 10 if harga<5000 else 25
-    
-    # Strategi Entry
-    buy_low = support + (2 * tick)
-    buy_high = buy_low + (3 * tick)
-    entry_str = f"{buy_low} - {buy_high}"
-    if harga > buy_high: entry_str += " (Tunggu Koreksi)"
-    
-    # Stop Loss & Target
-    sl = support - (5 * tick)
-    tp1 = int(buy_low * 1.04); tp2 = int(buy_low * 1.08)
-    
-    return entry_str, sl, f"TP1: {tp1} | TP2: {tp2}"
+def get_tick_size(harga):
+    if harga < 200: return 1
+    elif harga < 500: return 2
+    elif harga < 2000: return 5
+    elif harga < 5000: return 10
+    else: return 25
 
-def format_angka(nilai): return "{:,}".format(int(nilai)).replace(",", ".")
+def bulatkan_ke_tick(harga):
+    if harga <= 0: return 0
+    tick = get_tick_size(harga)
+    return int(round(harga / tick) * tick)
+
+def get_psychological_step(harga):
+    if harga < 200: return 10
+    elif harga < 1000: return 50
+    elif harga < 5000: return 100
+    else: return 250
+
+def format_angka(nilai):
+    return "{:,}".format(int(nilai)).replace(",", ".")
+
+def hitung_plan_sakti(data_analisa, ticker_fibo=None):
+    harga_sekarang = data_analisa.get('last_price', 0)
+    hist_data = data_analisa.get('hist_data', {})
+    support_short = data_analisa.get('support', 0)
+    if support_short == 0: support_short = int(harga_sekarang * 0.96)
+    tipe_trading = data_analisa.get('type', 'UNKNOWN')
+
+    if harga_sekarang <= 0: return "-", 0, "-"
+    
+    base_support = support_short
+    tick_size = get_tick_size(base_support)
+    buy_low = bulatkan_ke_tick(base_support + (2 * tick_size))
+    buy_high = bulatkan_ke_tick(buy_low + (3 * tick_size))
+    
+    status_entry = ""
+    if harga_sekarang > (buy_high * 1.03): status_entry = "\n⚠️ Harga Lari"
+    elif harga_sekarang < buy_low: buy_low = harga_sekarang
+
+    entry_str = f"{format_angka(buy_low)} - {format_angka(buy_high)}{status_entry}"
+
+    sl_raw = base_support - (6 * get_tick_size(base_support))
+    sl = bulatkan_ke_tick(sl_raw)
+
+    if tipe_trading == "ARA": 
+        tp_str = "HOLD SAMPAI ARA 🚀"
+        sl = bulatkan_ke_tick(harga_sekarang * 0.92)
+    elif tipe_trading == "INVEST":
+        tp_str = "HOLD JANGKA PANJANG"
+        sl = bulatkan_ke_tick(harga_sekarang * 0.85)
+    else:
+        tp1 = bulatkan_ke_tick(buy_low * 1.04)
+        max_1y = hist_data.get('max_1y', 0)
+        if max_1y > buy_low and max_1y < (buy_low * 1.5): tp2_raw = max_1y
+        else: tp2_raw = buy_low * 1.08
+
+        if ticker_fibo:
+            try:
+                hist = yf.Ticker(ticker_fibo).history(period="1mo")
+                if not hist.empty:
+                    swing_high = hist['High'].max()
+                    swing_low = hist['Low'].min()
+                    swing_range = swing_high - swing_low
+                    tp_fibo = swing_low + (swing_range * 1.618)
+                    if tp_fibo < tp2_raw and tp_fibo > buy_low: tp2_raw = tp_fibo
+            except: pass
+        
+        tp2 = bulatkan_ke_tick(tp2_raw)
+        step = get_psychological_step(tp2)
+        tp3_raw = (int(tp2 / step) + 1) * step
+        if tp3_raw <= tp2: tp3_raw += step
+        tp3 = bulatkan_ke_tick(tp3_raw)
+
+        tp_str = (f"🎯 TP1: {format_angka(tp1)}\n"
+                  f"🚀 TP2: {format_angka(tp2)}\n"
+                  f"💎 TP3: {format_angka(tp3)}")
+
+    return entry_str, sl, tp_str
 
 # ==========================================
-# 6. ENDPOINT DETAIL (AGGREGATOR V8)
+# 6. ENDPOINT DETAIL (AGGREGATOR V8 + FAILOVER V9)
 # ==========================================
 @app.route('/api/stock-detail', methods=['GET'])
 def get_stock_detail():
@@ -337,11 +420,10 @@ def get_stock_detail():
     # 1. Data Fundamental (PER/PBV/ROE)
     funda = ambil_data_fundamental_live(ticker_lengkap)
     
-    # 2. Data Teknikal Mentah (7+ Indikator) [FITUR BARU]
-    # AI akan melihat data ini agar sepaham dengan scanner
+    # 2. Data Teknikal Mentah (7+ Indikator) [FITUR V8 - UTUH]
     teknikal_lengkap = hitung_indikator_lengkap(ticker_lengkap)
     
-    # 3. Berita & Korelasi Sektoral [FITUR LAMA +]
+    # 3. Berita & Korelasi Sektoral [FITUR V7 - UTUH]
     list_berita = ambil_berita_saham(ticker_lengkap)
     laporan_berita = agen_pencari_berita_robust(ticker_polos, funda['sektor'], list_berita)
 
@@ -364,7 +446,7 @@ def get_stock_detail():
     {laporan_berita}
     """
     
-    # 5. Analisa AI
+    # 5. Analisa AI (DENGAN FAILOVER V9)
     analisa_final = agen_analis_utama(data_context)
     entry, sl, tp = hitung_plan_sakti(data)
 
@@ -394,7 +476,7 @@ def get_stock_detail():
     })
 
 # ==========================================
-# 7. SCANNER & WATCHLIST (TETAP SAMA)
+# 7. SCANNER
 # ==========================================
 def process_single_stock(kode, target_strategy, min_score_needed):
     try:
@@ -452,20 +534,11 @@ def remove_watchlist():
     if ticker and ticker in WATCHLIST: WATCHLIST.remove(ticker)
     return jsonify({"message": "Success", "current_list": WATCHLIST})
 
-# HALAMAN DEPAN
 @app.route('/', methods=['GET'])
 def index():
-    return jsonify({
-        "status": "Server Alpha Hunter V8 (Synchronized Logic) ONLINE 🚀",
-        "features": {
-            "search": "Hybrid (DDG + Yahoo + Sectoral)",
-            "analysis": "DeepSeek / Groq (6 Points)",
-            "scanner": "V5 Sniper"
-        },
-        "message": "Gunakan endpoint /api/stock-detail?ticker=BBRI"
-    })
+    return jsonify({"status": "Server Alpha Hunter V10 (Merged V8+V9) ONLINE 🚀"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 7860))
-    print(f"🚀 Alpha Hunter V8 Server Running on Port: {port}")
+    print(f"🚀 Alpha Hunter V10 Server Running on Port: {port}")
     app.run(host='0.0.0.0', port=port)

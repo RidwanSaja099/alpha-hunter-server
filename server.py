@@ -403,9 +403,54 @@ CACHE_DATA = {}
 CACHE_TIMEOUT = 300 
 MARKET_STATUS = {"condition": "NORMAL", "last_check": 0}
 
-DATABASE_SYARIAH = ["ADRO", "ANTM", "ASII", "BRIS", "GOTO", "TLKM", "UNTR", "ICBP", "INDF", "PGAS", "PTBA", "MDKA", "ACES", "ELSA"]
-MARKET_UNIVERSE = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "UNTR", "ICBP", "GOTO", "ANTM", "ADRO", "BREN", "AMMN", "MDKA"]
-WATCHLIST = ["BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "GOTO", "ANTM", "ADRO", "UNTR"]
+# ==========================================
+# 5. UTILS & DATABASE (EXPANDED LIST - 100+ STOCKS)
+# ==========================================
+CACHE_DATA = {}
+CACHE_TIMEOUT = 300 
+MARKET_STATUS = {"condition": "NORMAL", "last_check": 0}
+
+# --- DATABASE SAHAM SYARIAH (JII, ISSI LIQUID) ---
+# Total: 75 Saham Pilihan (Anti-Saham Tidur)
+DATABASE_SYARIAH = [
+    # TAMBANG & ENERGI
+    "ADRO", "PTBA", "ITMG", "UNTR", "HRUM", "INDY", "DOID", "KKGI", "BUMI", 
+    "PGAS", "ELSA", "MEDC", "AKRA", "ADMR", "PGEO", "MBMA",
+    # LOGAM & MINERAL
+    "ANTM", "INCO", "MDKA", "TINS", "NCKL", "AMMN", "BRMS", "PSAB",
+    # BANK SYARIAH & KEUANGAN
+    "BRIS", "BTPS", "PNBS",
+    # TELEKOMUNIKASI & MENARA
+    "TLKM", "ISAT", "EXCL", "TOWR", "TBIG", "MTEL",
+    # KONSUMER & RITEL
+    "ICBP", "INDF", "MYOR", "UNVR", "KLBF", "SIDO", "CMRY", "GOOD", "ROTI",
+    "AMRT", "MIDI", "ACES", "MAPI", "MAPA", "ERAA", "RALS",
+    # PROPERTY & KONSTRUKSI
+    "CTRA", "BSDE", "PWON", "SMRA", "ASRI", "PTPP", "WIKA", "ADHI", "JSMR",
+    # TEKNOLOGI & DIGITAL
+    "GOTO", "EMTK", "SCMA", "BUKA", "WIRG",
+    # KERTAS & BAHAN DASAR
+    "INKP", "TKIM", "BRPT", "TPIA", "ESSA", "SMGR", "INTP", "AVIA",
+    # AGRI & POULTRY
+    "CPIN", "JPFA", "MAIN", "AALI", "LSIP", "DSNG", "TAPG",
+    # OTOMOTIF & HEAVY
+    "ASII", "AUTO", "DRMA"
+]
+
+# --- MARKET UNIVERSE (SYARIAH + BIG BANKS) ---
+# Total: Gabungan Syariah + BBCA, BBRI, BMRI, BBNI
+MARKET_UNIVERSE = list(set(DATABASE_SYARIAH + ["BBCA", "BBRI", "BMRI", "BBNI", "BBTN", "BDMN"]))
+
+# --- WATCHLIST (FAVORIT TRADER HARIAN) ---
+# Total: 30 Saham Paling Sering Dilirik
+WATCHLIST = [
+    "BBRI", "BBCA", "BMRI", "BBNI", "BRIS",  # The Banks
+    "TLKM", "ASII", "UNTR", "GOTO", "AMMN",  # The Giants
+    "ADRO", "PTBA", "PGAS", "MEDC", "AKRA",  # Energy
+    "ANTM", "MDKA", "INCO", "TINS", "BRMS",  # Metal
+    "ICBP", "INDF", "AMRT", "KLBF", "SIDO",  # Consumer
+    "CTRA", "BSDE", "INKP", "BRPT", "TPIA"   # Others
+]
 
 def validasi_histori_panjang(ticker_lengkap, data_short):
     try:

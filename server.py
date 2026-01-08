@@ -243,43 +243,59 @@ def hitung_indikator_lengkap(ticker_lengkap):
         return f"[Error Hitung Indikator]: {e}"
 
 # ==========================================
-# 3. FITUR V7: AGEN PENCARI BERITA (HYBRID + SEKTORAL)
+# 3. FITUR V7.1: AGEN PENCARI BERITA (LOKALISASI + 3 POIN WAJIB)
 # ==========================================
-def dapatkan_keywords_cerdas(ticker, sektor):
+def dapatkan_keywords_cerdas(ticker, sektor, nama_perusahaan=""):
     """
-    Membuat query pencarian yang pintar berdasarkan sektor saham.
+    Membuat query spesifik untuk pasar INDONESIA (IDX) agar tidak nyasar ke US.
     """
     sektor = sektor.upper() if sektor else "GENERAL"
-    query = f"berita saham {ticker} indonesia terbaru hari ini sentimen"
+    ticker_bersih = ticker.replace(".JK", "")
     
-    # Logika Korelasi Sektoral
-    if any(x in sektor for x in ["GOLD", "MINING", "METAL"]): query += " + harga komoditas emas nikel dunia"
-    elif any(x in sektor for x in ["OIL", "ENERGY"]): query += " + harga minyak brent crude oil"
-    elif "COAL" in sektor or ticker in ["ADRO", "PTBA", "ITMG"]: query += " + harga batubara newcastle"
-    elif "BANK" in sektor: query += " + suku bunga BI rate rupiah"
-    elif "TECH" in sektor: query += " + saham teknologi nasdaq goto"
-    elif "CPO" in sektor or "PLANTATION" in sektor: query += " + harga CPO malaysia"
+    # 1. Base Query: Pakai Nama Perusahaan + Indonesia
+    if nama_perusahaan and nama_perusahaan != "N/A":
+        query = f"berita saham {ticker_bersih} {nama_perusahaan} Indonesia sentimen terkini"
+    else:
+        query = f"berita saham emiten {ticker_bersih} Indonesia IDX terkini"
+    
+    # 2. Logika Korelasi Sektoral (Context Injection)
+    if any(x in sektor for x in ["GOLD", "MINING", "METAL"]): 
+        query += " + harga emas nikel dunia"
+    elif any(x in sektor for x in ["OIL", "ENERGY"]): 
+        query += " + harga minyak brent crude oil"
+    elif "COAL" in sektor or ticker_bersih in ["ADRO", "PTBA", "ITMG"]: 
+        query += " + harga batubara newcastle"
+    elif "BANK" in sektor: 
+        query += " + suku bunga BI rate"
+    elif "TECH" in sektor: 
+        query += " + saham teknologi goto nasdaq"
+    elif "CPO" in sektor: 
+        query += " + harga CPO malaysia"
+    elif "PROPERTY" in sektor:
+        query += " + insentif ppn properti"
+        
     return query
 
-def agen_pencari_berita_robust(ticker, sektor, berita_yahoo_backup):
+def agen_pencari_berita_robust(ticker, sektor, berita_yahoo_backup, nama_perusahaan=""):
     """
-    Mencari berita dari Internet (DDG) dan Backup (Yahoo).
+    Mencari berita dengan filter 'id-id' (Indonesia) dan merangkum sesuai 3 Poin Utama.
     """
     laporan_mentah = ""
     sumber_data = "YAHOO (BACKUP)"
 
-    # 1. Coba Cari di Internet (DuckDuckGo)
+    # 1. Coba Cari di Internet (DuckDuckGo) - Pakai Region Indonesia
     if DDGS:
         try:
-            query = dapatkan_keywords_cerdas(ticker, sektor)
+            query = dapatkan_keywords_cerdas(ticker, sektor, nama_perusahaan)
             print(f"🌍 Searching: {query}")
-            results = DDGS().text(query, max_results=4)
+            # Region 'id-id' wajib agar hasil pencarian lokal
+            results = DDGS().text(query, region='id-id', max_results=4)
             if results:
                 ddg_text = []
                 for r in results:
                     ddg_text.append(f"- {r['title']}: {r['body']}")
                 laporan_mentah = "\n".join(ddg_text)
-                sumber_data = "INTERNET (REAL-TIME)"
+                sumber_data = "INTERNET (REAL-TIME IDX)"
         except Exception as e: print(f"⚠️ DDG Error: {e}")
 
     # 2. Jika Kosong, Pakai Yahoo Finance
@@ -290,20 +306,24 @@ def agen_pencari_berita_robust(ticker, sektor, berita_yahoo_backup):
                 yahoo_text.append(f"- {b.get('title', '')}")
             laporan_mentah = "\n".join(yahoo_text)
         else:
-            laporan_mentah = "Tidak ada berita spesifik yang ditemukan."
+            laporan_mentah = "Tidak ada berita spesifik."
 
-    # 3. Rangkum dengan AI (Jika Groq Tersedia - Karena Cepat)
+    # 3. Rangkum dengan AI (Groq) - DENGAN 3 POIN WAJIB
     if client_groq: 
         try:
             prompt_wartawan = f"""
-            Kamu adalah Reporter Pasar Modal.
+            Kamu adalah Reporter Pasar Modal Indonesia.
+            Analisa berita untuk saham: {ticker} ({nama_perusahaan}).
+            
             DATA MENTAH ({sumber_data}):
             {laporan_mentah}
             
-            TUGAS:
+            TUGAS (JANGAN HILANGKAN POIN INI):
             1. Ambil inti berita yang relevan dengan harga saham.
             2. Jika ada sentimen komoditas/global, masukkan.
             3. Rangkum maksimal 3 poin padat.
+            
+            Pastikan rangkumanmu dalam Bahasa Indonesia dan relevan untuk Trader IDX.
             """
             chat = client_groq.chat.completions.create(
                 messages=[{"role": "user", "content": prompt_wartawan}],
@@ -397,59 +417,77 @@ def agen_analis_utama(data_context):
     return "⚠️ SYSTEM ERROR: Semua AI (DeepSeek, Groq, Gemini) tidak merespons. Cek kuota API/Koneksi."
 
 # ==========================================
-# 5. DATABASE & UTILS (CACHE & MARKET STATUS)
+# 5. UTILS & DATABASE (V18 - 115+ TOP LIQUID STOCKS)
 # ==========================================
 CACHE_DATA = {}
 CACHE_TIMEOUT = 300 
 MARKET_STATUS = {"condition": "NORMAL", "last_check": 0}
 
-# ==========================================
-# 5. UTILS & DATABASE (EXPANDED LIST - 100+ STOCKS)
-# ==========================================
-CACHE_DATA = {}
-CACHE_TIMEOUT = 300 
-MARKET_STATUS = {"condition": "NORMAL", "last_check": 0}
-
-# --- DATABASE SAHAM SYARIAH (JII, ISSI LIQUID) ---
-# Total: 75 Saham Pilihan (Anti-Saham Tidur)
+# --- DATABASE SAHAM SYARIAH (JII 70 + ISSI PILIHAN) ---
+# Total: 100+ Saham Syariah Terbaik & Terlikuid
 DATABASE_SYARIAH = [
-    # TAMBANG & ENERGI
-    "ADRO", "PTBA", "ITMG", "UNTR", "HRUM", "INDY", "DOID", "KKGI", "BUMI", 
-    "PGAS", "ELSA", "MEDC", "AKRA", "ADMR", "PGEO", "MBMA",
-    # LOGAM & MINERAL
-    "ANTM", "INCO", "MDKA", "TINS", "NCKL", "AMMN", "BRMS", "PSAB",
-    # BANK SYARIAH & KEUANGAN
-    "BRIS", "BTPS", "PNBS",
-    # TELEKOMUNIKASI & MENARA
-    "TLKM", "ISAT", "EXCL", "TOWR", "TBIG", "MTEL",
-    # KONSUMER & RITEL
-    "ICBP", "INDF", "MYOR", "UNVR", "KLBF", "SIDO", "CMRY", "GOOD", "ROTI",
-    "AMRT", "MIDI", "ACES", "MAPI", "MAPA", "ERAA", "RALS",
-    # PROPERTY & KONSTRUKSI
-    "CTRA", "BSDE", "PWON", "SMRA", "ASRI", "PTPP", "WIKA", "ADHI", "JSMR",
-    # TEKNOLOGI & DIGITAL
-    "GOTO", "EMTK", "SCMA", "BUKA", "WIRG",
-    # KERTAS & BAHAN DASAR
-    "INKP", "TKIM", "BRPT", "TPIA", "ESSA", "SMGR", "INTP", "AVIA",
-    # AGRI & POULTRY
-    "CPIN", "JPFA", "MAIN", "AALI", "LSIP", "DSNG", "TAPG",
-    # OTOMOTIF & HEAVY
-    "ASII", "AUTO", "DRMA"
+    # 1. ENERGI, MINYAK & GAS (High Volatility)
+    "ADRO", "PTBA", "ITMG", "HRUM", "INDY", "DOID", "KKGI", "BUMI", 
+    "PGAS", "ELSA", "MEDC", "AKRA", "ADMR", "PGEO", "MBMA", "RAJA", "ENRG",
+    
+    # 2. TAMBANG LOGAM & MINERAL
+    "ANTM", "INCO", "MDKA", "TINS", "NCKL", "AMMN", "BRMS", "PSAB", "ZINC", "DKFT",
+    
+    # 3. KESEHATAN & FARMASI (Defensive & Trending) -> [NEW]
+    "KLBF", "SIDO", "MIKA", "HEAL", "SILO", "SAME", "KAEF", "TSPC", "PRDA",
+    
+    # 4. KONSUMER & RITEL (Bluechip Syariah)
+    "ICBP", "INDF", "MYOR", "UNVR", "CMRY", "GOOD", "ROTI", "STTP",
+    "AMRT", "MIDI", "ACES", "MAPI", "MAPA", "ERAA", "RALS", "LPPF",
+    
+    # 5. TELEKOMUNIKASI, MENARA & MEDIA
+    "TLKM", "ISAT", "EXCL", "TOWR", "TBIG", "MTEL", "MNCN", "SCMA", "EMTK",
+    
+    # 6. PROPERTY, KONSTRUKSI & SEMEN
+    "CTRA", "BSDE", "PWON", "SMRA", "ASRI", "DMAS", "DILD", # Property
+    "PTPP", "WIKA", "ADHI", "WEGE", "TOTL", # Konstruksi
+    "SMGR", "INTP", "JSMR", # Semen & Tol
+    
+    # 7. TEKNOLOGI & DIGITAL BANKING
+    "GOTO", "BUKA", "WIRG", "ARTO", "BELI", "MLPT",
+    
+    # 8. BAHAN BAKU & KERTAS (Basic Materials)
+    "INKP", "TKIM", "BRPT", "TPIA", "ESSA", "AVIA", "ARNA", "WOOD",
+    
+    # 9. AGRIKULTUR & POULTRY (CPO & Ayam)
+    "CPIN", "JPFA", "MAIN", 
+    "AALI", "LSIP", "DSNG", "TAPG", "STAA", "SSMS", "SMAR",
+    
+    # 10. TRANSPORTASI & LOGISTIK -> [NEW]
+    "SMDR", "TMAS", "ASSA", "BIRD", "GIAA",
+    
+    # 11. OTOMOTIF & KOMPONEN
+    "ASII", "AUTO", "DRMA", "SMSM",
+    
+    # 12. HOLDING & LAINNYA
+    "UNTR", "SRTG", "BNBR", "VKTR"
 ]
 
-# --- MARKET UNIVERSE (SYARIAH + BIG BANKS) ---
-# Total: Gabungan Syariah + BBCA, BBRI, BMRI, BBNI
-MARKET_UNIVERSE = list(set(DATABASE_SYARIAH + ["BBCA", "BBRI", "BMRI", "BBNI", "BBTN", "BDMN"]))
+# --- MARKET UNIVERSE (SYARIAH + KONVENSIONAL BIG CAPS) ---
+# Gabungan Syariah + Bank Besar Konvensional (BBCA, BBRI, dll)
+MARKET_UNIVERSE = list(set(DATABASE_SYARIAH + [
+    "BBCA", "BBRI", "BMRI", "BBNI", # The Big 4
+    "BBTN", "BDMN", "BNGA", "NISP", "PNBN", "BJBR" # Mid-Cap Banks
+]))
 
 # --- WATCHLIST (FAVORIT TRADER HARIAN) ---
-# Total: 30 Saham Paling Sering Dilirik
+# Top 40 Saham Paling Sering Di-Tradingkan
 WATCHLIST = [
-    "BBRI", "BBCA", "BMRI", "BBNI", "BRIS",  # The Banks
-    "TLKM", "ASII", "UNTR", "GOTO", "AMMN",  # The Giants
-    "ADRO", "PTBA", "PGAS", "MEDC", "AKRA",  # Energy
-    "ANTM", "MDKA", "INCO", "TINS", "BRMS",  # Metal
-    "ICBP", "INDF", "AMRT", "KLBF", "SIDO",  # Consumer
-    "CTRA", "BSDE", "INKP", "BRPT", "TPIA"   # Others
+    # Big Caps / Movers
+    "BBRI", "BBCA", "BMRI", "BBNI", "TLKM", "ASII", "GOTO", "AMMN", "BREN",
+    # Energy & Commodities (Sering Rally)
+    "ADRO", "PTBA", "PGAS", "MEDC", "AKRA", "ANTM", "MDKA", "INCO", "TINS",
+    # Gorengan Mewah & Second Liner (High Cuan)
+    "BRMS", "BUMI", "DOID", "ENRG", "PSAB", "RAJA", "BRIS",
+    # Consumer & Health (Defensive)
+    "ICBP", "AMRT", "KLBF", "MIKA",
+    # Property & Tech
+    "CTRA", "BSDE", "ARTO", "EMTK"
 ]
 
 def validasi_histori_panjang(ticker_lengkap, data_short):
@@ -627,18 +665,29 @@ def get_stock_detail():
     # 3. Ambil Data Fundamental Live
     funda = ambil_data_fundamental_live(ticker_lengkap)
 
+    # --- [UPDATE V7.1: AMBIL NAMA PERUSAHAAN] ---
+    # Tujuannya agar pencarian berita tidak nyasar ke saham luar negeri (misal META/APPLE)
+    try:
+        stock_info = yf.Ticker(ticker_lengkap).info
+        nama_perusahaan_asli = stock_info.get('longName', ticker_polos)
+    except:
+        nama_perusahaan_asli = ticker_polos
+    # --------------------------------------------
+
     score = data['score']
     verdict = data['verdict']
     catatan_histori = hist_data.get('note', 'Valid')
     trend_1y = hist_data.get('trend_1y', 'N/A')
     
-    # 4. Ambil Berita & Cari di Internet (Fitur V7)
+    # 4. Ambil Berita & Cari di Internet (Fitur V7 Updated)
     list_berita = ambil_berita_saham(ticker_lengkap)
-    laporan_berita = agen_pencari_berita_robust(ticker_polos, funda['sektor'], list_berita)
+    
+    # UPDATE PEMANGGILAN: Masukkan nama_perusahaan_asli sebagai parameter ke-4
+    laporan_berita = agen_pencari_berita_robust(ticker_polos, funda['sektor'], list_berita, nama_perusahaan_asli)
 
     # 5. Susun Context untuk AI
     data_context = f"""
-    SAHAM: {ticker_polos}
+    SAHAM: {ticker_polos} ({nama_perusahaan_asli})
     
     {info_waktu}
     

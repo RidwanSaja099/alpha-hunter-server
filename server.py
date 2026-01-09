@@ -371,7 +371,7 @@ def agen_analis_utama(data_context):
 
     5. 🎯 **ACTION PLAN PRESISI (WAJIB ISI ANGKA)**
        - **STRATEGI:** (Pilih: SCALPING / SWING / INVEST / BPJS / BSJP / HINDARI / CALON ARA).
-       - **TIMING MASUK:** (Jelaskan waktu terbaik: HAKA Pagi / Tunggu Koreksi Sesi 1 / Buy on Breakout Sore).
+       - **TIMING MASUK:** (Jelaskan waktu terbaik: HAKA Pagi / Tunggu Koreksi Sesi 1 / Buy on Breakout Sore/Tunggu beberapa hari Sampai kondisi tertentu ..../ Jelaskan Kondisi kapan sesuai analisismu).
        - **AREA ENTRY:** Tentukan harga beli (Gunakan Fibonacci Support atau Pivot S1).
        - **TARGET PROFIT (TP):** Berikan **TP1, TP2, dan TP3** (Gunakan Fibo Resistance/Pivot R1/R2).
        - **STOP LOSS (SL):** Titik cut loss aman (Gunakan ATR atau Pivot S2).

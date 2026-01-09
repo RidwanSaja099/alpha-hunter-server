@@ -7,8 +7,11 @@ import pandas as pd
 import numpy as np
 import math
 import pytz
+import feedparser
+import urllib.parse
 from flask import Flask, jsonify, request
 from dotenv import load_dotenv
+
 
 # --- IMPORT LIBRARY AI & SEARCH ---
 try:
@@ -242,17 +245,21 @@ def hitung_indikator_lengkap(ticker_lengkap):
     except Exception as e:
         return f"[Error Hitung Indikator]: {e}"
 
+import feedparser
+import urllib.parse
+
 # ==========================================
-# 3. FITUR V7.1: AGEN PENCARI BERITA (LOKALISASI + 3 POIN WAJIB)
+# 3. FITUR V20: AGEN PENCARI BERITA (HYBRID: GOOGLE NEWS + YAHOO BARENGAN)
 # ==========================================
 def dapatkan_keywords_cerdas(ticker, sektor, nama_perusahaan=""):
     """
-    Membuat query spesifik untuk pasar INDONESIA (IDX) agar tidak nyasar ke US.
+    [HELPER] Membuat query spesifik untuk pasar INDONESIA (IDX).
+    Tetap mempertahankan logika sektoral agar pencarian relevan.
     """
     sektor = sektor.upper() if sektor else "GENERAL"
     ticker_bersih = ticker.replace(".JK", "")
     
-    # 1. Base Query: Pakai Nama Perusahaan + Indonesia
+    # 1. Base Query
     if nama_perusahaan and nama_perusahaan != "N/A":
         query = f"berita saham {ticker_bersih} {nama_perusahaan} Indonesia sentimen terkini"
     else:
@@ -278,52 +285,60 @@ def dapatkan_keywords_cerdas(ticker, sektor, nama_perusahaan=""):
 
 def agen_pencari_berita_robust(ticker, sektor, berita_yahoo_backup, nama_perusahaan=""):
     """
-    Mencari berita dengan filter 'id-id' (Indonesia) dan merangkum sesuai 3 Poin Utama.
+    Mengambil berita dari DUA SUMBER SEKALIGUS (Google News + Yahoo Finance)
+    Lalu digabung agar tidak ada info yang terlewat.
     """
-    laporan_mentah = ""
-    sumber_data = "YAHOO (BACKUP)"
+    list_berita_mentah = []
+    sumber_data = "SUMBER KOSONG"
+    ticker_bersih = ticker.replace(".JK", "")
 
-    # 1. Coba Cari di Internet (DuckDuckGo) - Pakai Region Indonesia
-    if DDGS:
-        try:
-            query = dapatkan_keywords_cerdas(ticker, sektor, nama_perusahaan)
-            print(f"🌍 Searching: {query}")
-            # Region 'id-id' wajib agar hasil pencarian lokal
-            results = DDGS().text(query, region='id-id', max_results=4)
-            if results:
-                ddg_text = []
-                for r in results:
-                    ddg_text.append(f"- {r['title']}: {r['body']}")
-                laporan_mentah = "\n".join(ddg_text)
-                sumber_data = "INTERNET (REAL-TIME IDX)"
-        except Exception as e: print(f"⚠️ DDG Error: {e}")
+    # --- SUMBER 1: GOOGLE NEWS RSS (Berita Media Nasional) ---
+    try:
+        search_query = dapatkan_keywords_cerdas(ticker, sektor, nama_perusahaan)
+        query_encoded = urllib.parse.quote(search_query)
+        rss_url = f"https://news.google.com/rss/search?q={query_encoded}&hl=id&gl=ID&ceid=ID:id"
+        
+        feed = feedparser.parse(rss_url)
+        if feed.entries:
+            print(f"🌍 Google News: {len(feed.entries)} berita ditemukan untuk {ticker_bersih}")
+            for entry in feed.entries[:4]: # Ambil 4 teratas
+                sumber = entry.source.get('title', 'Media Nasional')
+                # Kasih label [G-News] biar AI tau sumbernya
+                list_berita_mentah.append(f"- [G-News] {entry.title} (Sumber: {sumber})")
+    except Exception as e:
+        print(f"⚠️ Google News Skip: {e}")
 
-    # 2. Jika Kosong, Pakai Yahoo Finance
-    if not laporan_mentah or len(laporan_mentah) < 50:
-        yahoo_text = []
-        if berita_yahoo_backup:
-            for b in berita_yahoo_backup:
-                yahoo_text.append(f"- {b.get('title', '')}")
-            laporan_mentah = "\n".join(yahoo_text)
-        else:
-            laporan_mentah = "Tidak ada berita spesifik."
+    # --- SUMBER 2: YAHOO FINANCE (Rilis Resmi & Global) ---
+    if berita_yahoo_backup:
+        print(f"🌍 Yahoo Finance: {len(berita_yahoo_backup)} berita backup")
+        for b in berita_yahoo_backup[:3]: # Ambil 3 teratas dari Yahoo
+            judul = b.get('title', '')
+            # Kasih label [Yahoo]
+            list_berita_mentah.append(f"- [Yahoo] {judul}")
 
-    # 3. Rangkum dengan AI (Groq) - DENGAN 3 POIN WAJIB
+    # --- GABUNGKAN SEMUA DATA ---
+    if list_berita_mentah:
+        laporan_mentah = "\n".join(list_berita_mentah)
+        sumber_data = "HYBRID (GOOGLE + YAHOO)"
+    else:
+        laporan_mentah = "Tidak ada berita spesifik dari Google News maupun Yahoo."
+
+    # --- RANGKUM DENGAN AI (3 POIN WAJIB) ---
     if client_groq: 
         try:
             prompt_wartawan = f"""
-            Kamu adalah Reporter Pasar Modal Indonesia.
-            Analisa berita untuk saham: {ticker} ({nama_perusahaan}).
+            Kamu adalah Reporter Pasar Modal Indonesia (IDX).
+            Saya punya kumpulan berita dari berbagai sumber untuk saham: {ticker_bersih} ({nama_perusahaan}).
             
-            DATA MENTAH ({sumber_data}):
+            DATA BERITA CAMPURAN:
             {laporan_mentah}
             
-            TUGAS (JANGAN HILANGKAN POIN INI):
-            1. Ambil inti berita yang relevan dengan harga saham.
-            2. Jika ada sentimen komoditas/global, masukkan.
-            3. Rangkum maksimal 3 poin padat.
+            TUGAS WAJIB (Rangkum jadi satu kesatuan):
+            1. Ambil inti berita utama yang paling relevan dengan harga saham saat ini.
+            2. Jika ada sentimen sektoral/komoditas (Emas, Minyak, CPO, dll), wajib masukkan.
+            3. Buat ringkasan padat maksimal 3 poin (Bahasa Indonesia).
             
-            Pastikan rangkumanmu dalam Bahasa Indonesia dan relevan untuk Trader IDX.
+            Jika beritanya duplikat/mirip, jadikan satu poin saja.
             """
             chat = client_groq.chat.completions.create(
                 messages=[{"role": "user", "content": prompt_wartawan}],
@@ -333,7 +348,6 @@ def agen_pencari_berita_robust(ticker, sektor, berita_yahoo_backup, nama_perusah
         except: pass
 
     return f"[{sumber_data}] {laporan_mentah}"
-
 # ==========================================
 # 4. FITUR V13: AGEN KEPALA ANALIS (ACTION PLAN DETAIL)
 # ==========================================
